@@ -43,8 +43,8 @@ Theme::paletteFromTheme(QStringView theme)
               /*mid*/ QColor(0x20, 0x22, 0x28),
               /*text*/ QColor(0xca, 0xcc, 0xd1),
               /*bright_text*/ QColor(0xf4, 0xf5, 0xf8),
-              /*base*/ QColor(0x20, 0x22, 0x28),
-              /*window*/ QColor(0x2d, 0x31, 0x39));
+              /*base*/ QColor(0x00, 0x99, 0x00),
+              /*window*/ QColor(0x0a, 0x0a, 0x0a));
             darkActive.setColor(QPalette::AlternateBase, QColor(0x2d, 0x31, 0x39));
             darkActive.setColor(QPalette::Highlight, QColor(0x38, 0xa3, 0xd8));
             darkActive.setColor(QPalette::HighlightedText, QColor(0xf4, 0xf5, 0xf8));
@@ -65,7 +65,7 @@ Theme::Theme(QStringView theme)
     auto p     = paletteFromTheme(theme);
     separator_ = p.mid().color();
     if (theme == u"light") {
-        sidebarBackground_ = QColor(0x23, 0x36, 0x49);
+        sidebarBackground_ = QColor(0x00, 0x00, 0x00);
         alternateButton_   = QColor(0xcc, 0xcc, 0xcc);
         red_               = QColor(0xa8, 0x23, 0x53);
         green_             = QColor(QColorConstants::Svg::green);
