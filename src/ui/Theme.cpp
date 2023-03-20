@@ -46,11 +46,11 @@ Theme::paletteFromTheme(QStringView theme)
               /*base*/ QColor(0x00, 0x99, 0x00),
               /*window*/ QColor(0x0a, 0x0a, 0x0a));
             darkActive.setColor(QPalette::AlternateBase, QColor(0x2d, 0x31, 0x39));
-            darkActive.setColor(QPalette::Highlight, QColor(0x38, 0xa3, 0xd8));
+            darkActive.setColor(QPalette::Highlight, QColor(0x1c, 0x00, 0x63));
             darkActive.setColor(QPalette::HighlightedText, QColor(0xf4, 0xf5, 0xf8));
             darkActive.setColor(QPalette::ToolTipBase, darkActive.base().color());
             darkActive.setColor(QPalette::ToolTipText, darkActive.text().color());
-            darkActive.setColor(QPalette::Link, QColor(0x38, 0xa3, 0xd8));
+            darkActive.setColor(QPalette::Link, QColor(0x1c, 0x00, 0x63));
             darkActive.setColor(QPalette::ButtonText, QColor(0x82, 0x82, 0x84));
             return darkActive;
         }();
