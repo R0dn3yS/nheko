@@ -43,7 +43,7 @@ Theme::paletteFromTheme(QStringView theme)
               /*mid*/ QColor(0x20, 0x22, 0x28),
               /*text*/ QColor(0xca, 0xcc, 0xd1),
               /*bright_text*/ QColor(0xf4, 0xf5, 0xf8),
-              /*base*/ QColor(0x00, 0x99, 0x00),
+              /*base*/ QColor(0x00, 0x00, 0x00),
               /*window*/ QColor(0x0a, 0x0a, 0x0a));
             darkActive.setColor(QPalette::AlternateBase, QColor(0x2d, 0x31, 0x39));
             darkActive.setColor(QPalette::Highlight, QColor(0x1c, 0x00, 0x63));
