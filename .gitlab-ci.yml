@@ -55,7 +55,7 @@ build-gcc11:
         libssl-dev libqt5multimedia5-plugins libqt5multimediagsttools5 libqt5multimediaquick5 libqt5svg5-dev
         qtmultimedia5-dev qtquickcontrols2-5-dev qttools5-dev qttools5-dev-tools qtdeclarative5-dev
         qml-module-qtmultimedia qml-module-qtquick-controls2 qml-module-qtquick-layouts qml-module-qt-labs-platform
-        qt5keychain-dev ccache clazy libcurl4-openssl-dev libevent-dev libspdlog-dev git nlohmann-json3-dev libcmark-dev asciidoc # libolm-dev
+        qt5keychain-dev ccache clazy libcurl4-openssl-dev libevent-dev libspdlog-dev git nlohmann-json3-dev libcmark-dev asciidoc time # libolm-dev
     # need recommended deps for wget
     - apt-get -y install wget
     - /usr/sbin/update-ccache-symlinks
@@ -71,48 +71,7 @@ build-gcc11:
         -DCMAKE_BUILD_TYPE=Release -DHUNTER_CONFIGURATION_TYPES=Release
         -DCI_BUILD=ON -DFETCHCONTENT_QUIET=OFF
         -DJSON_ImplicitConversions=OFF
-    - cmake --build build
-  after_script:
-    - mv ../.hunter .hunter
-  rules:
-    - if : '$CI_PIPELINE_TRIGGERED == null'
-  cache:
-    key: "$CI_JOB_NAME"
-    paths:
-      - .hunter/
-      - .ccache
-
-build-gcc10:
-  stage: build
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/debian:bullseye
-  tags: [docker]
-  variables:
-    TRAVIS_OS_NAME: linux
-  before_script:
-    - echo -e "\e[0Ksection_start:`date +%s`:install_deps[collapsed=true]\r\e[0K\e[1m\e[95mInstalling apt dependencies"
-    - apt-get update
-    - apt-get -y install --no-install-suggests --no-install-recommends ca-certificates build-essential ninja-build cmake gcc make automake ccache liblmdb-dev
-        libssl-dev libqt5multimedia5-plugins libqt5multimediagsttools5 libqt5multimediaquick5 libqt5svg5-dev
-        qtmultimedia5-dev qtquickcontrols2-5-dev qttools5-dev qttools5-dev-tools qtdeclarative5-dev
-        qml-module-qtmultimedia qml-module-qtquick-controls2 qml-module-qtquick-layouts qml-module-qt-labs-platform
-        qt5keychain-dev ccache clazy libcurl4-openssl-dev libevent-dev libspdlog-dev git nlohmann-json3-dev libcmark-dev asciidoc # libolm-dev
-    # need recommended deps for wget
-    - apt-get -y install wget
-    - /usr/sbin/update-ccache-symlinks
-    - rm -rf ../.hunter &&  mv .hunter ../.hunter || true
-    - echo -e "\e[0Ksection_end:`date +%s`:install_deps\r\e[0K"
-  script:
-    - export PATH="/usr/lib/ccache:${PATH}"
-    - cmake -GNinja -H. -Bbuild
-        -DCMAKE_INSTALL_PREFIX=.deps/usr
-        -DHUNTER_ROOT="../.hunter"
-        -DHUNTER_ENABLED=ON -DBUILD_SHARED_LIBS=OFF -DUSE_BUNDLED_OPENSSL=ON -DUSE_BUNDLED_LMDB=OFF -DUSE_BUNDLED_QTKEYCHAIN=OFF
-        -DVOIP=OFF
-        -DCMAKE_BUILD_TYPE=Release -DHUNTER_CONFIGURATION_TYPES=Release
-        -DCI_BUILD=ON -DFETCHCONTENT_QUIET=OFF
-        -DJSON_ImplicitConversions=OFF
-        -DMAN=OFF
-    - cmake --build build
+    - /usr/bin/time cmake --build build
   after_script:
     - mv ../.hunter .hunter
   rules:
@@ -168,6 +127,7 @@ build-tw:
         "pkgconfig(gstreamer-webrtc-1.0)"
         "pkgconfig(xcb)"
         "pkgconfig(xcb-ewmh)"
+        "time"
     - echo -e "\e[0Ksection_end:`date +%s`:install_deps\r\e[0K"
   script:
     - export PATH="/usr/lib64/ccache:${PATH}"
@@ -179,7 +139,7 @@ build-tw:
         -DCI_BUILD=ON -DFETCHCONTENT_QUIET=OFF
         # temporarily disabled because of mtxclient failures
         #-DJSON_ImplicitConversions=OFF
-    - cmake --build build
+    - /usr/bin/time cmake --build build
   rules:
     - if : '$CI_PIPELINE_TRIGGERED == null'
   cache:
@@ -264,8 +224,7 @@ build-flatpak:
   after_script:
     - echo -e "\e[0Ksection_start:`date +%s`:upload_flatpak[collapsed=true]\r\e[0K\e[1m\e[95mUploading flatpak"
     - bash ./.ci/upload-nightly-gitlab.sh build-flatpak/nheko-${ARCH}.flatpak
-    - (cd ./scripts && ./upload-to-flatpak-repo.sh ../build-flatpak/repo) || true
-    - (mkdir -p artifacts && cp build-flatpak/nheko-${ARCH}.flatpak artifacts/) || true
+    - (cd ./scripts && ./upload-to-flatpak-repo.sh ../build-flatpak/repo) || exit_code=$?
     - echo -e "\e[0Ksection_end:`date +%s`:upload_flatpak\r\e[0K"
   rules:
     - if : '$CI_PIPELINE_TRIGGERED == null'
@@ -273,9 +232,10 @@ build-flatpak:
     key: "$CI_JOB_NAME"
     paths:
       - build-flatpak/.flatpak-builder/
+    when: always # because the arm runner is slow and ooms often otherwise!
   artifacts:
     expose_as: 'flatpak'
-    paths: ['artifacts/nheko-${ARCH}.flatpak']
+    paths: ['build-flatpak/nheko-${ARCH}.flatpak']
     name: flatpak-${CI_COMMIT_REF_NAME}-${VERSION}-${ARCH}
 
 appimage-amd64:

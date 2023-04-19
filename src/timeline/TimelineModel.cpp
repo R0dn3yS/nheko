@@ -54,9 +54,9 @@ struct RoomEventType
         return qml_mtx_events::EventType::AudioMessage;
     }
     constexpr qml_mtx_events::EventType
-    operator()(const mtx::events::Event<mtx::events::msg::Confetti> &)
+    operator()(const mtx::events::Event<mtx::events::msg::ElementEffect> &)
     {
-        return qml_mtx_events::EventType::ConfettiMessage;
+        return qml_mtx_events::EventType::ElementEffectMessage;
     }
     constexpr qml_mtx_events::EventType
     operator()(const mtx::events::Event<mtx::events::msg::Emote> &)
@@ -82,6 +82,11 @@ struct RoomEventType
     operator()(const mtx::events::Event<mtx::events::msg::Text> &)
     {
         return qml_mtx_events::EventType::TextMessage;
+    }
+    constexpr qml_mtx_events::EventType
+    operator()(const mtx::events::Event<mtx::events::msg::Unknown> &)
+    {
+        return qml_mtx_events::EventType::UnknownMessage;
     }
     constexpr qml_mtx_events::EventType
     operator()(const mtx::events::Event<mtx::events::msg::Video> &)
@@ -203,7 +208,7 @@ qml_mtx_events::toRoomEventType(mtx::events::EventType e)
     case EventType::RoomMember:
         return qml_mtx_events::EventType::Member;
     case EventType::RoomMessage:
-        return qml_mtx_events::EventType::UnknownMessage;
+        return qml_mtx_events::EventType::UnknownEvent;
     case EventType::RoomName:
         return qml_mtx_events::EventType::Name;
     case EventType::RoomPowerLevels:
@@ -239,7 +244,7 @@ qml_mtx_events::toRoomEventType(mtx::events::EventType e)
     case EventType::Unsupported:
         return qml_mtx_events::EventType::Unsupported;
     default:
-        return qml_mtx_events::EventType::UnknownMessage;
+        return qml_mtx_events::EventType::UnknownEvent;
     }
 }
 
@@ -362,16 +367,17 @@ qml_mtx_events::fromRoomEventType(qml_mtx_events::EventType t)
         return mtx::events::EventType::SpaceChild;
     /// m.room.message
     case qml_mtx_events::AudioMessage:
-    case qml_mtx_events::ConfettiMessage:
+    case qml_mtx_events::ElementEffectMessage:
     case qml_mtx_events::EmoteMessage:
     case qml_mtx_events::FileMessage:
     case qml_mtx_events::ImageMessage:
     case qml_mtx_events::LocationMessage:
     case qml_mtx_events::NoticeMessage:
     case qml_mtx_events::TextMessage:
+    case qml_mtx_events::UnknownMessage:
     case qml_mtx_events::VideoMessage:
     case qml_mtx_events::Redacted:
-    case qml_mtx_events::UnknownMessage:
+    case qml_mtx_events::UnknownEvent:
     case qml_mtx_events::KeyVerificationRequest:
     case qml_mtx_events::KeyVerificationStart:
     case qml_mtx_events::KeyVerificationMac:
@@ -770,13 +776,12 @@ TimelineModel::data(const mtx::events::collections::TimelineEvents &event, int r
                 return qml_mtx_events::NotificationLevel::Nothing;
 
             const auto &id = event_id(event);
-            std::vector<std::pair<mtx::common::Relation, mtx::events::collections::TimelineEvent>>
+            std::vector<std::pair<mtx::common::Relation, mtx::events::collections::TimelineEvents>>
               relatedEvents;
             for (const auto &r : mtx::accessors::relations(event).relations) {
                 auto related = events.get(r.event_id, id);
                 if (related) {
-                    relatedEvents.emplace_back(r,
-                                               mtx::events::collections::TimelineEvent{*related});
+                    relatedEvents.emplace_back(r, *related);
                 }
             }
 
@@ -1075,14 +1080,32 @@ TimelineModel::addEvents(const mtx::responses::Timeline &timeline)
         } else if (std::holds_alternative<RoomEvent<mtx::events::msg::Text>>(e)) {
             if (auto msg = QString::fromStdString(
                   std::get<RoomEvent<mtx::events::msg::Text>>(e).content.body);
-                msg.contains("🎉") || msg.contains("🎊"))
+                msg.contains("🎉") || msg.contains("🎊")) {
                 needsSpecialEffects_ = true;
-        } else if (std::holds_alternative<RoomEvent<mtx::events::msg::Confetti>>(e))
-            needsSpecialEffects_ = true;
+                specialEffects_.setFlag(Confetti);
+            }
+        } else if (std::holds_alternative<RoomEvent<mtx::events::msg::Unknown>>(e)) {
+            if (auto msg = QString::fromStdString(
+                  std::get<RoomEvent<mtx::events::msg::Unknown>>(e).content.body);
+                msg.contains("🎉") || msg.contains("🎊")) {
+                needsSpecialEffects_ = true;
+                specialEffects_.setFlag(Confetti);
+            }
+        } else if (std::holds_alternative<RoomEvent<mtx::events::msg::ElementEffect>>(e)) {
+            if (auto msgtype =
+                  std::get<RoomEvent<mtx::events::msg::ElementEffect>>(e).content.msgtype;
+                msgtype == "nic.custom.confetti") {
+                needsSpecialEffects_ = true;
+                specialEffects_.setFlag(Confetti);
+            } else if (msgtype == "io.element.effect.rainfall") {
+                needsSpecialEffects_ = true;
+                specialEffects_.setFlag(Rainfall);
+            }
+        }
     }
 
     if (needsSpecialEffects_)
-        emit confetti();
+        triggerSpecialEffects();
 
     if (avatarChanged)
         emit roomAvatarUrlChanged();
@@ -1264,10 +1287,14 @@ TimelineModel::readEvent(const std::string &id)
     http::client()->read_event(
       room_id_.toStdString(),
       id,
-      [this](mtx::http::RequestErr err) {
+      [this, newId = id, oldId = currentReadId](mtx::http::RequestErr err) {
           if (err) {
-              nhlog::net()->warn(
-                "failed to read_event ({}, {})", room_id_.toStdString(), currentId.toStdString());
+              nhlog::net()->warn("failed to read_event ({}, {})", room_id_.toStdString(), newId);
+
+              ChatPage::instance()->callFunctionOnGuiThread([this, newId, oldId] {
+                  if (currentReadId.toStdString() == newId)
+                      this->currentReadId = oldId;
+              });
           }
       },
       !UserSettings::instance()->readReceipts());
@@ -1762,7 +1789,7 @@ TimelineModel::openMedia(const QString &eventId)
 bool
 TimelineModel::saveMedia(const QString &eventId) const
 {
-    mtx::events::collections::TimelineEvents *event = events.get(eventId.toStdString(), "");
+    auto event = events.get(eventId.toStdString(), "");
     if (!event)
         return false;
 
@@ -1837,7 +1864,7 @@ void
 TimelineModel::cacheMedia(const QString &eventId,
                           const std::function<void(const QString)> &callback)
 {
-    mtx::events::collections::TimelineEvents *event = events.get(eventId.toStdString(), "");
+    auto event = events.get(eventId.toStdString(), "");
     if (!event)
         return;
 
@@ -2041,7 +2068,14 @@ TimelineModel::triggerSpecialEffects()
 {
     if (needsSpecialEffects_) {
         // Note (Loren): Without the timer, this apparently emits before QML is ready
-        QTimer::singleShot(1, this, [this] { emit confetti(); });
+        if (specialEffects_.testFlag(Confetti)) {
+            QTimer::singleShot(1, this, [this] { emit confetti(); });
+            specialEffects_.setFlag(Confetti, false);
+        }
+        if (specialEffects_.testFlag(Rainfall)) {
+            QTimer::singleShot(1, this, [this] { emit rainfall(); });
+            specialEffects_.setFlag(Rainfall, false);
+        }
         needsSpecialEffects_ = false;
     }
 }
@@ -2051,6 +2085,10 @@ TimelineModel::markSpecialEffectsDone()
 {
     needsSpecialEffects_ = false;
     emit confettiDone();
+    emit rainfallDone();
+
+    specialEffects_.setFlag(Confetti, false);
+    specialEffects_.setFlag(Rainfall, false);
 }
 
 QString
@@ -2111,7 +2149,7 @@ TimelineModel::formatTypingUsers(const std::vector<QString> &users, const QColor
 QString
 TimelineModel::formatJoinRuleEvent(const QString &id)
 {
-    mtx::events::collections::TimelineEvents *e = events.get(id.toStdString(), "");
+    auto e = events.get(id.toStdString(), "");
     if (!e)
         return {};
 
@@ -2148,7 +2186,7 @@ TimelineModel::formatJoinRuleEvent(const QString &id)
 QString
 TimelineModel::formatGuestAccessEvent(const QString &id)
 {
-    mtx::events::collections::TimelineEvents *e = events.get(id.toStdString(), "");
+    auto e = events.get(id.toStdString(), "");
     if (!e)
         return {};
 
@@ -2172,7 +2210,7 @@ TimelineModel::formatGuestAccessEvent(const QString &id)
 QString
 TimelineModel::formatHistoryVisibilityEvent(const QString &id)
 {
-    mtx::events::collections::TimelineEvents *e = events.get(id.toStdString(), "");
+    auto e = events.get(id.toStdString(), "");
     if (!e)
         return {};
 
@@ -2204,7 +2242,7 @@ TimelineModel::formatHistoryVisibilityEvent(const QString &id)
 QString
 TimelineModel::formatPowerLevelEvent(const QString &id)
 {
-    mtx::events::collections::TimelineEvents *e = events.get(id.toStdString(), "");
+    auto e = events.get(id.toStdString(), "");
     if (!e)
         return {};
 
@@ -2212,7 +2250,7 @@ TimelineModel::formatPowerLevelEvent(const QString &id)
     if (!event)
         return QString();
 
-    mtx::events::StateEvent<mtx::events::state::PowerLevels> *prevEvent = nullptr;
+    mtx::events::StateEvent<mtx::events::state::PowerLevels> const *prevEvent = nullptr;
     if (!event->unsigned_data.replaces_state.empty()) {
         auto tempPrevEvent = events.get(event->unsigned_data.replaces_state, event->event_id);
         if (tempPrevEvent) {
@@ -2480,7 +2518,7 @@ TimelineModel::formatPowerLevelEvent(const QString &id)
 QString
 TimelineModel::formatImagePackEvent(const QString &id)
 {
-    mtx::events::collections::TimelineEvents *e = events.get(id.toStdString(), "");
+    auto e = events.get(id.toStdString(), "");
     if (!e)
         return {};
 
@@ -2488,7 +2526,7 @@ TimelineModel::formatImagePackEvent(const QString &id)
     if (!event)
         return {};
 
-    mtx::events::StateEvent<mtx::events::msc2545::ImagePack> *prevEvent = nullptr;
+    mtx::events::StateEvent<mtx::events::msc2545::ImagePack> const *prevEvent = nullptr;
     if (!event->unsigned_data.replaces_state.empty()) {
         auto tempPrevEvent = events.get(event->unsigned_data.replaces_state, event->event_id);
         if (tempPrevEvent) {
@@ -2552,8 +2590,8 @@ TimelineModel::formatImagePackEvent(const QString &id)
 QString
 TimelineModel::formatPolicyRule(const QString &id)
 {
-    auto idStr                                  = id.toStdString();
-    mtx::events::collections::TimelineEvents *e = events.get(idStr, "");
+    auto idStr = id.toStdString();
+    auto e     = events.get(idStr, "");
     if (!e)
         return {};
 
@@ -2644,7 +2682,7 @@ QVariantMap
 TimelineModel::formatRedactedEvent(const QString &id)
 {
     QVariantMap pair{{"first", ""}, {"second", ""}};
-    mtx::events::collections::TimelineEvents *e = events.get(id.toStdString(), "");
+    auto e = events.get(id.toStdString(), "");
     if (!e)
         return pair;
 
@@ -2681,7 +2719,7 @@ TimelineModel::formatRedactedEvent(const QString &id)
 void
 TimelineModel::acceptKnock(const QString &id)
 {
-    mtx::events::collections::TimelineEvents *e = events.get(id.toStdString(), "");
+    auto e = events.get(id.toStdString(), "");
     if (!e)
         return;
 
@@ -2706,7 +2744,7 @@ TimelineModel::acceptKnock(const QString &id)
 bool
 TimelineModel::showAcceptKnockButton(const QString &id)
 {
-    mtx::events::collections::TimelineEvents *e = events.get(id.toStdString(), "");
+    auto e = events.get(id.toStdString(), "");
     if (!e)
         return false;
 
@@ -2727,7 +2765,7 @@ TimelineModel::showAcceptKnockButton(const QString &id)
 void
 TimelineModel::joinReplacementRoom(const QString &id)
 {
-    mtx::events::collections::TimelineEvents *e = events.get(id.toStdString(), "");
+    auto e = events.get(id.toStdString(), "");
     if (!e)
         return;
 
@@ -2753,7 +2791,7 @@ TimelineModel::joinReplacementRoom(const QString &id)
 QString
 TimelineModel::formatMemberEvent(const QString &id)
 {
-    mtx::events::collections::TimelineEvents *e = events.get(id.toStdString(), "");
+    auto e = events.get(id.toStdString(), "");
     if (!e)
         return {};
 
@@ -2761,7 +2799,7 @@ TimelineModel::formatMemberEvent(const QString &id)
     if (!event)
         return {};
 
-    mtx::events::StateEvent<mtx::events::state::Member> *prevEvent = nullptr;
+    mtx::events::StateEvent<mtx::events::state::Member> const *prevEvent = nullptr;
     if (!event->unsigned_data.replaces_state.empty()) {
         auto tempPrevEvent = events.get(event->unsigned_data.replaces_state, event->event_id);
         if (tempPrevEvent) {
@@ -2913,7 +2951,8 @@ TimelineModel::setEdit(const QString &newEdit)
             if (msgType == mtx::events::MessageType::Text ||
                 msgType == mtx::events::MessageType::Notice ||
                 msgType == mtx::events::MessageType::Emote ||
-                msgType == mtx::events::MessageType::Confetti) {
+                msgType == mtx::events::MessageType::ElementEffect ||
+                msgType == mtx::events::MessageType::Unknown) {
                 auto relInfo  = relatedInfo(newEdit);
                 auto editText = relInfo.quoted_body;
 
@@ -2934,9 +2973,23 @@ TimelineModel::setEdit(const QString &newEdit)
 
                 if (msgType == mtx::events::MessageType::Emote)
                     input()->setText("/me " + editText);
-                else if (msgType == mtx::events::MessageType::Confetti)
-                    input()->setText("/confetti" + editText);
-                else
+                else if (msgType == mtx::events::MessageType::ElementEffect) {
+                    auto u =
+                      std::get_if<mtx::events::RoomEvent<mtx::events::msg::ElementEffect>>(&e);
+                    auto msgtypeString = u ? u->content.msgtype : "";
+                    if (msgtypeString == "io.element.effect.rainfall")
+                        input()->setText("/rainfall " + editText);
+                    else if (msgtypeString == "nic.custom.confetti")
+                        input()->setText("/confetti " + editText);
+                    else
+                        input()->setText("/msgtype " + QString::fromStdString(msgtypeString) + " " +
+                                         editText);
+                } else if (msgType == mtx::events::MessageType::Unknown) {
+                    auto u = std::get_if<mtx::events::RoomEvent<mtx::events::msg::Unknown>>(&e);
+                    input()->setText("/msgtype " +
+                                     (u ? QString::fromStdString(u->content.msgtype) : "") + " " +
+                                     editText);
+                } else
                     input()->setText(editText);
             } else {
                 input()->setText(QLatin1String(""));
