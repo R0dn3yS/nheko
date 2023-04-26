@@ -148,6 +148,7 @@ InputBar::insertMimeData(const QMimeData *md)
 
     nhlog::ui()->debug("Got mime formats: {}",
                        md->formats().join(QStringLiteral(", ")).toStdString());
+    nhlog::ui()->debug("Has image: {}", md->hasImage());
     const auto formats = md->formats().filter(QStringLiteral("/"));
     const auto image   = formats.filter(QStringLiteral("image/"), Qt::CaseInsensitive);
     const auto audio   = formats.filter(QStringLiteral("audio/"), Qt::CaseInsensitive);
@@ -416,13 +417,14 @@ void
 InputBar::openFileSelection()
 {
     const QString homeFolder = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
-    const auto fileName =
-      QFileDialog::getOpenFileName(nullptr, tr("Select a file"), homeFolder, tr("All Files (*)"));
+    const QStringList fileNames =
+      QFileDialog::getOpenFileNames(nullptr, tr("Select file(s)"), homeFolder, tr("All Files (*)"));
 
-    if (fileName.isEmpty())
+    if (fileNames.isEmpty())
         return;
 
-    startUploadFromPath(fileName);
+    for (const auto &fileName : fileNames)
+        startUploadFromPath(fileName);
 }
 
 QString
