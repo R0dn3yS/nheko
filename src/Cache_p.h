@@ -84,6 +84,8 @@ public:
     QString getRoomVersion(lmdb::txn &txn, lmdb::dbi &statesdb);
     //! Retrieve if the room is a space
     bool getRoomIsSpace(lmdb::txn &txn, lmdb::dbi &statesdb);
+    //! Retrieve if the room is tombstoned (closed or replaced by a different room)
+    bool getRoomIsTombstoned(lmdb::txn &txn, lmdb::dbi &statesdb);
 
     //! Get a specific state event
     template<typename T>
@@ -180,18 +182,6 @@ public:
     void removeReadNotification(const std::string &event_id);
     //! Check if we have sent a desktop notification for the given event id.
     bool isNotificationSent(const std::string &event_id);
-
-    //! retrieve events in timeline and related functions
-    struct Messages
-    {
-        mtx::responses::Timeline timeline;
-        uint64_t next_index;
-        bool end_of_cache = false;
-    };
-    Messages getTimelineMessages(lmdb::txn &txn,
-                                 const std::string &room_id,
-                                 uint64_t index = std::numeric_limits<uint64_t>::max(),
-                                 bool forward   = false);
 
     std::optional<mtx::events::collections::TimelineEvents>
     getEvent(const std::string &room_id, std::string_view event_id);

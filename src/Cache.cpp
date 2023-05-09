@@ -45,8 +45,7 @@ static const std::string_view OLM_ACCOUNT_KEY("olm_account");
 static const std::string_view CACHE_FORMAT_VERSION_KEY("cache_format_version");
 static const std::string_view CURRENT_ONLINE_BACKUP_VERSION("current_online_backup_version");
 
-static constexpr auto MAX_DBS    = 32384UL;
-static constexpr auto BATCH_SIZE = 100;
+static constexpr auto MAX_DBS = 32384UL;
 
 #if Q_PROCESSOR_WORDSIZE >= 5 // 40-bit or more, up to 2^(8*WORDSIZE) words addressable.
 static constexpr auto DB_SIZE                 = 32ULL * 1024ULL * 1024ULL * 1024ULL; // 32 GB
@@ -1792,7 +1791,9 @@ Cache::updateState(const std::string &room, const mtx::responses::StateEvents &s
     updatedInfo.topic      = getRoomTopic(txn, statesdb).toStdString();
     updatedInfo.avatar_url = getRoomAvatarUrl(txn, statesdb, membersdb).toStdString();
     updatedInfo.version    = getRoomVersion(txn, statesdb).toStdString();
-    updatedInfo.is_space   = getRoomIsSpace(txn, statesdb);
+
+    updatedInfo.is_space      = getRoomIsSpace(txn, statesdb);
+    updatedInfo.is_tombstoned = getRoomIsTombstoned(txn, statesdb);
 
     roomsDb_.put(txn, room, nlohmann::json(updatedInfo).dump());
     updateSpaces(txn, {room}, {room});
@@ -2360,60 +2361,6 @@ Cache::previousBatchToken(const std::string &room_id)
     }
 }
 
-Cache::Messages
-Cache::getTimelineMessages(lmdb::txn &txn, const std::string &room_id, uint64_t index, bool forward)
-{
-    // TODO(nico): Limit the messages returned by this maybe?
-    auto orderDb  = getOrderToMessageDb(txn, room_id);
-    auto eventsDb = getEventsDb(txn, room_id);
-
-    Messages messages{};
-
-    std::string_view indexVal, event_id;
-
-    auto cursor = lmdb::cursor::open(txn, orderDb);
-    if (index == std::numeric_limits<uint64_t>::max()) {
-        if (!cursor.get(indexVal, event_id, forward ? MDB_FIRST : MDB_LAST)) {
-            messages.end_of_cache = true;
-            return messages;
-        }
-    } else {
-        if (!cursor.get(indexVal, event_id, MDB_SET)) {
-            messages.end_of_cache = true;
-            return messages;
-        }
-    }
-
-    int counter = 0;
-
-    bool ret;
-    while ((ret = cursor.get(indexVal,
-                             event_id,
-                             counter == 0 ? (forward ? MDB_FIRST : MDB_LAST)
-                                          : (forward ? MDB_NEXT : MDB_PREV))) &&
-           counter++ < BATCH_SIZE) {
-        std::string_view event;
-        bool success = eventsDb.get(txn, event_id, event);
-        if (!success)
-            continue;
-
-        try {
-            messages.timeline.events.push_back(
-              nlohmann::json::parse(event).get<mtx::events::collections::TimelineEvents>());
-        } catch (std::exception &e) {
-            nhlog::db()->error("Failed to parse message from cache {}", e.what());
-            continue;
-        }
-    }
-    cursor.close();
-
-    // std::reverse(timeline.events.begin(), timeline.events.end());
-    messages.next_index   = lmdb::from_sv<uint64_t>(indexVal);
-    messages.end_of_cache = !ret;
-
-    return messages;
-}
-
 std::optional<mtx::events::collections::TimelineEvents>
 Cache::getEvent(const std::string &room_id, std::string_view event_id)
 {
@@ -2558,9 +2505,13 @@ Cache::roomNamesAndAliases()
                 alias = aliases->content.alias;
             }
 
-            result.push_back(RoomNameAlias{.id    = std::move(room_id_str),
-                                           .name  = std::move(info.name),
-                                           .alias = std::move(alias)});
+            result.push_back(RoomNameAlias{
+              .id              = std::move(room_id_str),
+              .name            = std::move(info.name),
+              .alias           = std::move(alias),
+              .recent_activity = info.approximate_last_modification_ts,
+              .is_tombstoned   = info.is_tombstoned,
+            });
         } catch (std::exception &e) {
             nhlog::db()->warn("Failed to add room {} to result: {}", room_id, e.what());
         }
@@ -3088,6 +3039,28 @@ Cache::getRoomIsSpace(lmdb::txn &txn, lmdb::dbi &statesdb)
     }
 
     nhlog::db()->warn("m.room.create event is missing room version, assuming version \"1\"");
+    return false;
+}
+
+bool
+Cache::getRoomIsTombstoned(lmdb::txn &txn, lmdb::dbi &statesdb)
+{
+    using namespace mtx::events;
+    using namespace mtx::events::state;
+
+    std::string_view event;
+    bool res = statesdb.get(txn, to_string(mtx::events::EventType::RoomCreate), event);
+
+    if (res) {
+        try {
+            StateEvent<Tombstone> msg = nlohmann::json::parse(event).get<StateEvent<Tombstone>>();
+
+            return true;
+        } catch (const nlohmann::json::exception &e) {
+            nhlog::db()->warn("failed to parse m.room.tombstone event: {}", e.what());
+        }
+    }
+
     return false;
 }
 
@@ -5138,6 +5111,7 @@ to_json(nlohmann::json &j, const RoomInfo &info)
     j["version"]      = info.version;
     j["is_invite"]    = info.is_invite;
     j["is_space"]     = info.is_space;
+    j["tombst"]       = info.is_tombstoned;
     j["join_rule"]    = info.join_rule;
     j["guest_access"] = info.guest_access;
 
@@ -5161,8 +5135,11 @@ from_json(const nlohmann::json &j, RoomInfo &info)
     info.avatar_url = j.at("avatar_url").get<std::string>();
     info.version    = j.value(
       "version", QCoreApplication::translate("RoomInfo", "no version stored").toStdString());
-    info.is_invite    = j.at("is_invite").get<bool>();
-    info.is_space     = j.value("is_space", false);
+
+    info.is_invite     = j.at("is_invite").get<bool>();
+    info.is_space      = j.value("is_space", false);
+    info.is_tombstoned = j.value("tombst", false);
+
     info.join_rule    = j.at("join_rule").get<mtx::events::state::JoinRule>();
     info.guest_access = j.at("guest_access").get<bool>();
 
