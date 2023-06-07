@@ -106,26 +106,69 @@ Item {
 
                 Repeater {
                     model: Settings.recentReactions
+                    visible: room ? room.permissions.canSend(MtxEvent.Reaction) : false
 
-                    delegate: TextButton {
+                    delegate: AbstractButton {
+                        id: button
+
                         required property string modelData
 
-                        visible: room ? room.permissions.canSend(MtxEvent.Reaction) : false
+                        property color highlightColor: Nheko.colors.highlight
+                        property color buttonTextColor: Nheko.colors.buttonText
+                        property bool showImage: modelData.startsWith("mxc://")
 
-                        Layout.preferredHeight: fontMetrics.height
-                        font.family: Settings.emojiFont
+                        //Layout.preferredHeight: fontMetrics.height
+                        Layout.alignment: Qt.AlignBottom
 
-                        text: modelData
+                        focusPolicy: Qt.NoFocus
+                        width: showImage ? 16 : buttonText.implicitWidth
+                        height: showImage ? 16 : buttonText.implicitHeight
+                        implicitWidth: showImage ? 16 : buttonText.implicitWidth
+                        implicitHeight: showImage ? 16 : buttonText.implicitHeight
+
+                        Label {
+                            id: buttonText
+
+                            visible: !button.showImage
+
+                            anchors.centerIn: parent
+                            padding: 0
+                            text: button.modelData
+                            color: button.hovered ? button.highlightColor : button.buttonTextColor
+                            font.family: Settings.emojiFont
+                            verticalAlignment: Text.AlignVCenter
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+
+                        Image {
+                            id: buttonImg
+
+                            // Workaround, can't get icon.source working for now...
+                            anchors.fill: parent
+                            source: button.showImage ? (button.modelData.replace("mxc://", "image://MxcImage/") + "?scale") : ""
+                            sourceSize.height: button.height
+                            sourceSize.width: button.width
+                            fillMode: Image.PreserveAspectFit
+                        }
+
+                        CursorShape {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                        }
+
+                        Ripple {
+                            color: Qt.rgba(buttonTextColor.r, buttonTextColor.g, buttonTextColor.b, 0.5)
+                        }
+
                         onClicked: {
                             room.input.reaction(row.model.eventId, modelData);
                             TimelineManager.focusMessageInput();
                         }
                     }
+
                 }
 
                 ImageButton {
-                    id: editButton
-
                     visible: !!row.model && row.model.isEditable
                     buttonTextColor: Nheko.colors.buttonText
                     width: 16
@@ -149,16 +192,14 @@ Item {
                     ToolTip.visible: hovered
                     ToolTip.delay: Nheko.tooltipDelay
                     ToolTip.text: qsTr("React")
-                    onClicked: emojiPopup.visible ? emojiPopup.close() : emojiPopup.show(reactButton, function(emoji) {
+                    onClicked: emojiPopup.visible ? emojiPopup.close() : emojiPopup.show(reactButton, room.roomId, function(plaintext, markdown) {
                         var event_id = row.model ? row.model.eventId : "";
-                        room.input.reaction(event_id, emoji);
+                        room.input.reaction(event_id, plaintext);
                         TimelineManager.focusMessageInput();
                     })
                 }
 
                 ImageButton {
-                    id: threadButton
-
                     visible: room ? room.permissions.canSend(MtxEvent.TextMessage) : false
                     width: 16
                     hoverEnabled: true
@@ -170,8 +211,6 @@ Item {
                 }
 
                 ImageButton {
-                    id: replyButton
-
                     visible: room ? room.permissions.canSend(MtxEvent.TextMessage) : false
                     width: 16
                     hoverEnabled: true
@@ -180,6 +219,21 @@ Item {
                     ToolTip.delay: Nheko.tooltipDelay
                     ToolTip.text: qsTr("Reply")
                     onClicked: room.reply = row.model.eventId
+                }
+
+                ImageButton {
+                    visible: !!row.model && filteredTimeline.filterByContent
+                    buttonTextColor: Nheko.colors.buttonText
+                    width: 16
+                    hoverEnabled: true
+                    image: ":/icons/icons/ui/go-to.svg"
+                    ToolTip.visible: hovered
+                    ToolTip.delay: Nheko.tooltipDelay
+                    ToolTip.text: qsTr("Go to message")
+                    onClicked: {
+                        topBar.searchString = "";
+                        room.showEvent(row.model.eventId);
+                    }
                 }
 
                 ImageButton {
@@ -648,6 +702,16 @@ Item {
         }
 
         Platform.MenuItem {
+             visible: filteredTimeline.filterByContent
+             enabled: visible
+             text: qsTr("Go to &message")
+             onTriggered: function() {
+                topBar.searchString = "";
+                room.showEvent(messageContextMenu.eventId);
+            }
+         }
+
+        Platform.MenuItem {
             visible: messageContextMenu.text
             enabled: visible
             text: qsTr("&Copy")
@@ -666,8 +730,9 @@ Item {
 
             visible: room ? room.permissions.canSend(MtxEvent.Reaction) : false
             text: qsTr("Re&act")
-            onTriggered: emojiPopup.show(null, function(emoji) {
-                room.input.reaction(messageContextMenu.eventId, emoji);
+            onTriggered: emojiPopup.visible ? emojiPopup.close() : emojiPopup.show(null, room.roomId, function(plaintext, markdown) {
+                room.input.reaction(messageContextMenu.eventId, plaintext);
+                TimelineManager.focusMessageInput();
             })
         }
 

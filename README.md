@@ -252,7 +252,7 @@ KDE has similar plugins, that can extend the supported image types even more.
 - XCB, XCB-EWMH: For screensharing support on X11. VOIP needs to be enabled. Can be disabled with `-DSCREENSHARE_X11=OFF`.
 - [qtkeychain](https://github.com/frankosterfeld/qtkeychain) (You need at least version 0.12 for proper Gnome Keychain support. The bundled version requires libsecret, unless you pass `-DLIBSECRET_SUPPORT=OFF`.)
 - A compiler that supports C++ 20:
-    - Clang 11 (Only clazy 13 is tested in CI)
+    - Clang 16 (Only clazy 16 is tested in CI)
     - GCC 11 (tested on Gitlab CI)
     - MSVC 19.13 (tested on AppVeyor)
 
@@ -309,7 +309,7 @@ sudo pacman -S qt5-base \
 ```bash
 sudo apt install --no-install-recommends g++ cmake make zlib1g-dev libssl-dev libolm-dev liblmdb-dev libcmark-dev nlohmann-json3-dev libspdlog-dev libevent-dev libcurl4-openssl-dev libre2-dev libxcb-ewmh-dev asciidoc-base \
 qt{base,declarative,tools,multimedia,quickcontrols2-}5-dev libqt5svg5-dev qt5keychain-dev qml-module-qt{gstreamer,multimedia,quick-extras,-labs-settings,-labs-platform,graphicaleffects,quick-controls2,quick-particles2} \
-libgstreamer1.0-dev libgstreamer-plugins-{base,bad}1.0-dev qtgstreamer-plugins-qt5 libnice-dev
+libgstreamer1.0-dev libgstreamer-plugins-{base,bad}1.0-dev qtgstreamer-plugins-qt5 libnice-dev ninja-build
 ```
 lmdb++-dev is too old so bundled lmdbxx must be used.  
 libspdlog-dev in debian bullseye is too old (without backporting) so requires using hunter to use bundled spdlog.  

@@ -71,6 +71,8 @@ public:
     Q_INVOKABLE void remove(int index);
     Q_INVOKABLE void setAvatar(QUrl file);
 
+    static std::string unconflictingStatekey(const std::string &roomid, const std::string &key);
+
 signals:
     void globallyEnabledChanged();
     void statekeyChanged();
@@ -87,6 +89,8 @@ private slots:
     void addImageCb(std::string uri, std::string filename, mtx::common::ImageInfo info);
 
 private:
+    std::string unconflictingShortcode(const std::string &shortcode);
+
     std::string roomid_;
     std::string statekey_, old_statekey_;
 

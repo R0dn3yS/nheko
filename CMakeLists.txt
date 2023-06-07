@@ -356,8 +356,6 @@ set(SRC_FILES
 	src/dialogs/ReCaptcha.h
 
 	# Emoji
-	src/emoji/EmojiModel.cpp
-	src/emoji/EmojiModel.h
 	src/emoji/Provider.cpp
 	src/emoji/Provider.h
 
@@ -456,6 +454,8 @@ set(SRC_FILES
 	src/ColorImageProvider.h
 	src/CombinedImagePackModel.cpp
 	src/CombinedImagePackModel.h
+	src/GridImagePackModel.cpp
+	src/GridImagePackModel.h
 	src/CommandCompleter.cpp
 	src/CommandCompleter.h
 	src/CompletionModelRoles.h

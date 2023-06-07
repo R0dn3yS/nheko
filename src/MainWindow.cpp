@@ -19,6 +19,7 @@
 #include "CompletionProxyModel.h"
 #include "Config.h"
 #include "EventAccessors.h"
+#include "GridImagePackModel.h"
 #include "ImagePackListModel.h"
 #include "InviteesModel.h"
 #include "JdenticonProvider.h"
@@ -40,7 +41,6 @@
 #include "UsersModel.h"
 #include "Utils.h"
 #include "dock/Dock.h"
-#include "emoji/EmojiModel.h"
 #include "emoji/Provider.h"
 #include "encryption/DeviceVerificationFlow.h"
 #include "encryption/SelfVerificationStatus.h"
@@ -150,6 +150,7 @@ MainWindow::registerQmlTypes()
     qRegisterMetaType<mtx::responses::User>();
     qRegisterMetaType<mtx::responses::Profile>();
     qRegisterMetaType<CombinedImagePackModel *>();
+    qRegisterMetaType<GridImagePackModel *>();
     qRegisterMetaType<RoomSettingsAllowedRoomsModel *>();
     qRegisterMetaType<mtx::events::collections::TimelineEvents>();
     qRegisterMetaType<std::vector<DeviceInfo>>();
@@ -287,9 +288,6 @@ MainWindow::registerQmlTypes()
       "FilteredCommunitiesModel",
       QStringLiteral("Use Communities.filtered() to create a FilteredCommunitiesModel"));
 
-    qmlRegisterType<emoji::EmojiModel>("im.nheko.EmojiModel", 1, 0, "EmojiModel");
-    qmlRegisterUncreatableType<emoji::Emoji>(
-      "im.nheko.EmojiModel", 1, 0, "Emoji", QStringLiteral("Used by emoji models"));
     qmlRegisterUncreatableType<MediaUpload>(
       "im.nheko", 1, 0, "MediaUpload", QStringLiteral("MediaUploads can not be created in Qml"));
     qmlRegisterUncreatableMetaObject(emoji::staticMetaObject,

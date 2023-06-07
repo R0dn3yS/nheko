@@ -75,16 +75,17 @@ private:
 private:
     // Objective-C(++) doesn't like to do lots of regular C++, so the actual notification
     // posting is split out
-    void objCxxPostNotification(const QString &room_name,
-                                const QString &room_id,
-                                const QString &event_id,
-                                const QString &subtitle,
-                                const QString &informativeText,
-                                const QString &bodyImagePath,
-                                const QString &respondStr,
-                                const QString &sendStr,
-                                const QString &placeholder,
+    void objCxxPostNotification(const QString room_name,
+                                const QString room_id,
+                                const QString event_id,
+                                const QString subtitle,
+                                const QString informativeText,
+                                const QString bodyImagePath,
                                 const bool playSound);
+
+    QString respondStr;
+    QString sendStr;
+    QString placeholder;
 
 public:
     static void attachToMacNotifCenter();
