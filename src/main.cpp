@@ -154,8 +154,6 @@ main(int argc, char *argv[])
     QCoreApplication::setApplicationVersion(nheko::version);
     QCoreApplication::setOrganizationName(QStringLiteral("nheko"));
     QCoreApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
-    QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
-    QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
 
     // Disable the qml disk cache by default to prevent crashes on updates. See
     // https://github.com/Nheko-Reborn/nheko/issues/1383
@@ -256,7 +254,7 @@ main(int argc, char *argv[])
     app.setWindowIcon(QIcon::fromTheme(QStringLiteral("nheko"), QIcon{":/logos/nheko.png"}));
 #endif
 #ifdef NHEKO_FLATPAK
-    app.setDesktopFileName(QStringLiteral("io.github.NhekoReborn.Nheko"));
+    app.setDesktopFileName(QStringLiteral("im.nheko.Nheko"));
 #else
     app.setDesktopFileName(QStringLiteral("nheko"));
 #endif
@@ -311,6 +309,9 @@ main(int argc, char *argv[])
         std::exit(1);
     }
 
+    auto filter = new NhekoFixupPaletteEventFilter(&app);
+    app.installEventFilter(filter);
+
     if (parser.isSet(configName))
         UserSettings::initialize(parser.value(configName));
     else
@@ -332,16 +333,18 @@ main(int argc, char *argv[])
         QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedKingdom));
 
     QTranslator qtTranslator;
-    qtTranslator.load(QLocale(),
-                      QStringLiteral("qt"),
-                      QStringLiteral("_"),
-                      QLibraryInfo::location(QLibraryInfo::TranslationsPath));
-    app.installTranslator(&qtTranslator);
+    if (qtTranslator.load(QLocale(),
+                          QStringLiteral("qt"),
+                          QStringLiteral("_"),
+                          QLibraryInfo::path(QLibraryInfo::TranslationsPath)))
+        app.installTranslator(&qtTranslator);
 
     QTranslator appTranslator;
-    appTranslator.load(
-      QLocale(), QStringLiteral("nheko"), QStringLiteral("_"), QStringLiteral(":/translations"));
-    app.installTranslator(&appTranslator);
+    if (appTranslator.load(QLocale(),
+                           QStringLiteral("nheko"),
+                           QStringLiteral("_"),
+                           QStringLiteral(":/translations")))
+        app.installTranslator(&appTranslator);
 
     MainWindow w;
     // QQuickView w;

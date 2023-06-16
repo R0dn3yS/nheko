@@ -37,6 +37,19 @@ class MemberList;
 class ReCaptcha;
 }
 
+class NhekoFixupPaletteEventFilter final : public QObject
+{
+    Q_OBJECT
+
+public:
+    NhekoFixupPaletteEventFilter(QObject *parent)
+      : QObject(parent)
+    {
+    }
+
+    bool eventFilter(QObject *obj, QEvent *event) override;
+};
+
 class MainWindow final : public QQuickView
 {
     Q_OBJECT
@@ -64,8 +77,7 @@ public:
     QString focusedRoom() const;
 
 protected:
-    void closeEvent(QCloseEvent *event);
-    bool event(QEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
     // HACK: https://bugreports.qt.io/browse/QTBUG-83972, qtwayland cannot auto hide menu
     void mousePressEvent(QMouseEvent *) override;
 

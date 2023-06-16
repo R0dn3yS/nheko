@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QMessageBox>
 
+#include <mtx/events/collections.hpp>
 #include <mtx/requests.hpp>
 #include <mtx/responses/login.hpp>
 
@@ -62,13 +63,6 @@
 #ifdef NHEKO_DBUS_SYS
 #include "dbus/NhekoDBusApi.h"
 #endif
-
-Q_DECLARE_METATYPE(mtx::events::collections::TimelineEvents)
-Q_DECLARE_METATYPE(std::vector<DeviceInfo>)
-Q_DECLARE_METATYPE(std::vector<mtx::responses::PublicRoomsChunk>)
-Q_DECLARE_METATYPE(mtx::responses::PublicRoom)
-Q_DECLARE_METATYPE(mtx::responses::Profile)
-Q_DECLARE_METATYPE(mtx::responses::User)
 
 MainWindow *MainWindow::instance_ = nullptr;
 
@@ -138,27 +132,6 @@ MainWindow::MainWindow(QWindow *parent)
 void
 MainWindow::registerQmlTypes()
 {
-    qRegisterMetaType<mtx::events::msg::KeyVerificationAccept>();
-    qRegisterMetaType<mtx::events::msg::KeyVerificationCancel>();
-    qRegisterMetaType<mtx::events::msg::KeyVerificationDone>();
-    qRegisterMetaType<mtx::events::msg::KeyVerificationKey>();
-    qRegisterMetaType<mtx::events::msg::KeyVerificationMac>();
-    qRegisterMetaType<mtx::events::msg::KeyVerificationReady>();
-    qRegisterMetaType<mtx::events::msg::KeyVerificationRequest>();
-    qRegisterMetaType<mtx::events::msg::KeyVerificationStart>();
-    qRegisterMetaType<mtx::responses::PublicRoom>();
-    qRegisterMetaType<mtx::responses::User>();
-    qRegisterMetaType<mtx::responses::Profile>();
-    qRegisterMetaType<CombinedImagePackModel *>();
-    qRegisterMetaType<GridImagePackModel *>();
-    qRegisterMetaType<RoomSettingsAllowedRoomsModel *>();
-    qRegisterMetaType<mtx::events::collections::TimelineEvents>();
-    qRegisterMetaType<std::vector<DeviceInfo>>();
-
-    qRegisterMetaType<std::vector<mtx::responses::PublicRoomsChunk>>();
-    qRegisterMetaType<std::vector<mtx::responses::User>>();
-
-    qRegisterMetaType<mtx::responses::User>();
     qmlRegisterUncreatableMetaObject(qml_mtx_events::staticMetaObject,
                                      "im.nheko",
                                      1,
@@ -278,9 +251,6 @@ MainWindow::registerQmlTypes()
 
     qmlRegisterSingletonInstance("im.nheko", 1, 0, "Settings", userSettings_.data());
 
-    qRegisterMetaType<mtx::events::collections::TimelineEvents>();
-    qRegisterMetaType<std::vector<DeviceInfo>>();
-
     qmlRegisterUncreatableType<FilteredCommunitiesModel>(
       "im.nheko",
       1,
@@ -348,18 +318,6 @@ MainWindow::setWindowTitle(int notificationCount)
     QQuickView::setTitle(name);
 }
 
-bool
-MainWindow::event(QEvent *event)
-{
-    auto type = event->type();
-
-    if (type == QEvent::Close) {
-        closeEvent(static_cast<QCloseEvent *>(event));
-    }
-
-    return QQuickView::event(event);
-}
-
 // HACK: https://bugreports.qt.io/browse/QTBUG-83972, qtwayland cannot auto hide menu
 void
 MainWindow::mousePressEvent(QMouseEvent *event)
@@ -418,6 +376,20 @@ MainWindow::showChatPage()
     emit switchToChatPage();
 }
 
+bool
+NhekoFixupPaletteEventFilter::eventFilter(QObject *obj, QEvent *event)
+{
+    // Workaround for the QGuiApplication palette not being applied to toplevel windows for some
+    // reason?!?
+    if (event->type() == QEvent::ChildAdded &&
+        obj->metaObject()->className() == QStringLiteral("QQuickRootItem")) {
+        for (const auto window : QGuiApplication::topLevelWindows()) {
+            QGuiApplication::postEvent(window, new QEvent(QEvent::ApplicationPaletteChange));
+        }
+    }
+    return false;
+}
+
 void
 MainWindow::closeEvent(QCloseEvent *event)
 {
@@ -433,6 +405,7 @@ MainWindow::closeEvent(QCloseEvent *event)
     if (!qApp->isSavingSession() && isVisible() && pageSupportsTray() && userSettings_->tray()) {
         event->ignore();
         hide();
+        return;
     }
 }
 

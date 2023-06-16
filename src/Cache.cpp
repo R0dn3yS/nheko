@@ -21,7 +21,7 @@
 #if __has_include(<keychain.h>)
 #include <keychain.h>
 #else
-#include <qt5keychain/keychain.h>
+#include <qt6keychain/keychain.h>
 #endif
 
 #include <mtx/responses/common.hpp>
@@ -92,11 +92,6 @@ static constexpr auto MEGOLM_SESSIONS_DATA_DB("megolm_sessions_data_db");
 
 using CachedReceipts = std::multimap<uint64_t, std::string, std::greater<uint64_t>>;
 using Receipts       = std::map<std::string, std::map<std::string, uint64_t>>;
-
-Q_DECLARE_METATYPE(RoomMember)
-Q_DECLARE_METATYPE(mtx::responses::Timeline)
-Q_DECLARE_METATYPE(RoomInfo)
-Q_DECLARE_METATYPE(mtx::responses::QueryKeys)
 
 namespace {
 std::unique_ptr<Cache> instance_ = nullptr;
@@ -2133,8 +2128,16 @@ Cache::saveInvite(lmdb::txn &txn,
             auto display_name =
               msg->content.display_name.empty() ? msg->state_key : msg->content.display_name;
 
-            MemberInfo tmp{
-              display_name, msg->content.avatar_url, msg->content.reason, msg->content.is_direct};
+            std::string inviter = "";
+            if (msg->content.membership == mtx::events::state::Membership::Invite) {
+                inviter = msg->sender;
+            }
+
+            MemberInfo tmp{display_name,
+                           msg->content.avatar_url,
+                           inviter,
+                           msg->content.reason,
+                           msg->content.is_direct};
 
             membersdb.put(txn, msg->state_key, nlohmann::json(tmp).dump());
         } else {
@@ -4429,7 +4432,9 @@ Cache::displayName(const QString &room_id, const QString &user_id)
 static bool
 isDisplaynameSafe(const std::string &s)
 {
-    for (QChar c : QString::fromStdString(s).toStdU32String()) {
+    const auto str = QString::fromStdString(s);
+
+    for (QChar c : str) {
         if (c.isPrint() && !c.isSpace())
             return false;
     }
@@ -5176,6 +5181,8 @@ to_json(nlohmann::json &j, const MemberInfo &info)
 {
     j["name"]       = info.name;
     j["avatar_url"] = info.avatar_url;
+    if (!info.inviter.empty())
+        j["inviter"] = info.inviter;
     if (info.is_direct)
         j["is_direct"] = info.is_direct;
     if (!info.reason.empty())
@@ -5189,6 +5196,7 @@ from_json(const nlohmann::json &j, MemberInfo &info)
     info.avatar_url = j.value("avatar_url", "");
     info.is_direct  = j.value("is_direct", false);
     info.reason     = j.value("reason", "");
+    info.inviter    = j.value("inviter", "");
 }
 
 void
@@ -5293,13 +5301,6 @@ namespace cache {
 void
 init(const QString &user_id)
 {
-    qRegisterMetaType<RoomMember>();
-    qRegisterMetaType<RoomInfo>();
-    qRegisterMetaType<QMap<QString, RoomInfo>>();
-    qRegisterMetaType<std::map<QString, RoomInfo>>();
-    qRegisterMetaType<std::map<QString, mtx::responses::Timeline>>();
-    qRegisterMetaType<mtx::responses::QueryKeys>();
-
     instance_ = std::make_unique<Cache>(user_id);
 }
 
