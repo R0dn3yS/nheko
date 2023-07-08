@@ -19,7 +19,6 @@ MatrixText {
     // table border-collapse doesn't seem to work
     text: "
     <style type=\"text/css\">
-    a { color:" + palette.link + ";}
     code { background-color: " + palette.alternateBase + "; white-space: pre-wrap; }
     pre { background-color: " + palette.alternateBase + "; white-space: pre-wrap; }
     table {
@@ -47,7 +46,7 @@ MatrixText {
     enabled: !Settings.mobileMode
     font.pointSize: (Settings.enlargeEmojiOnlyMessages && isOnlyEmoji > 0 && isOnlyEmoji < 4) ? Settings.fontSize * 3 : Settings.fontSize
 
-    CursorShape {
+    NhekoCursorShape {
         enabled: isReply
         anchors.fill: parent
         cursorShape: Qt.PointingHandCursor

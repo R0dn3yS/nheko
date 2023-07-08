@@ -8,14 +8,13 @@ import "./device-verification"
 import "./emoji"
 import "./ui"
 import "./voip"
-import Qt.labs.platform 1.1 as Platform
-import QtQuick 2.15
-import QtQuick.Controls 2.5
-import QtQuick.Layouts 1.3
-import QtQuick.Particles 2.15
-import QtQuick.Window 2.13
-import im.nheko 1.0
-import im.nheko.EmojiModel 1.0
+import Qt.labs.platform as Platform
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import QtQuick.Particles
+import QtQuick.Window
+import im.nheko
 
 Item {
     id: timelineView
@@ -123,7 +122,7 @@ Item {
                         searchString: topBar.searchString
                     }
                     Loader {
-                        source: CallManager.isOnCall && CallManager.callType != CallType.VOICE ? "voip/VideoCall.qml" : ""
+                        source: CallManager.isOnCall && CallManager.callType != Voip.VOICE ? "voip/VideoCall.qml" : ""
 
                         onLoaded: TimelineManager.setVideoCallItem()
                     }
@@ -249,7 +248,7 @@ Item {
 
                 onLinkActivated: Nheko.openLink(link)
 
-                CursorShape {
+                NhekoCursorShape {
                     anchors.fill: parent
                     cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor
                 }
@@ -369,6 +368,7 @@ Item {
         id: timelineEffects
 
         anchors.fill: parent
+        shouldEffectsRun: timelineView.shouldEffectsRun
     }
     NhekoDropArea {
         anchors.fill: parent
@@ -417,7 +417,7 @@ Item {
             effectsTimer.restart();
         }
         function onShowRawMessageDialog(rawMessage) {
-            var component = Qt.createComponent("qrc:/qml/dialogs/RawMessageDialog.qml");
+            var component = Qt.createComponent("qrc:/resources/qml/dialogs/RawMessageDialog.qml");
             if (component.status == Component.Ready) {
                 var dialog = component.createObject(timelineRoot, {
                         "rawMessage": rawMessage

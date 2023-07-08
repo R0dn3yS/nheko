@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+pragma ComponentBehavior: Bound
 import ".."
 import "../ui"
 import Qt.labs.platform 1.1 as Platform
