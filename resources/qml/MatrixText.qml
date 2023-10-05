@@ -2,9 +2,11 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import QtQuick 2.5
-import QtQuick.Controls 2.3
-import im.nheko 1.0
+// TODO: using any Qt 6 API version will screw up the reply text color. We need to
+//       figure out a more permanent fix than just importing the old version.
+import QtQuick 2.15
+import QtQuick.Controls
+import im.nheko
 
 TextEdit {
     id: r
@@ -28,7 +30,6 @@ TextEdit {
     color: palette.text
     focus: false
     readOnly: true
-    selectByMouse: !Settings.mobileMode
     textFormat: TextEdit.RichText
     wrapMode: Text.Wrap
 
