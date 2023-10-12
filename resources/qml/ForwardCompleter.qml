@@ -10,7 +10,7 @@ import im.nheko 1.0
 Popup {
     id: forwardMessagePopup
 
-    property var mid
+    property string mid: ""
 
     function setMessageEventId(mid_in) {
         mid = mid_in;
@@ -54,25 +54,9 @@ Popup {
         Reply {
             id: replyPreview
 
-            property var modelData: room ? room.getDump(mid, "") : {}
-
-            blurhash: modelData.blurhash ?? ""
-            body: modelData.body ?? ""
-            encryptionError: modelData.encryptionError ?? ""
-            eventId: modelData.eventId ?? ""
-            filename: modelData.filename ?? ""
-            filesize: modelData.filesize ?? ""
-            formattedBody: modelData.formattedBody ?? ""
-            isOnlyEmoji: modelData.isOnlyEmoji ?? false
-            originalWidth: modelData.originalWidth ?? 0
-            proportionalHeight: modelData.proportionalHeight ?? 1
-            type: modelData.type ?? MtxEvent.UnknownMessage
-            typeString: modelData.typeString ?? ""
-            url: modelData.url ?? ""
-            userColor: TimelineManager.userColor(modelData.userId, palette.window)
-            userId: modelData.userId ?? ""
-            userName: modelData.userName ?? ""
-            width: parent.width
+            eventId: mid
+            userColor: TimelineManager.userColor(replyPreview.userId, palette.window)
+            maxWidth: parent.width
         }
         MatrixTextField {
             id: roomTextInput
@@ -80,7 +64,7 @@ Popup {
             color: palette.text
             width: forwardMessagePopup.width - forwardMessagePopup.leftPadding * 2
 
-            Keys.onPressed: {
+            Keys.onPressed: (event) => {
                 if (event.key == Qt.Key_Up || event.key == Qt.Key_Backtab) {
                     event.accepted = true;
                     completerPopup.up();
@@ -113,7 +97,7 @@ Popup {
     }
     Connections {
         function onCompletionSelected(id) {
-            room.forwardMessage(messageContextMenu.eventId, id);
+            room.forwardMessage(forwardMessagePopup.mid, id);
             forwardMessagePopup.close();
         }
         function onCountChanged() {
