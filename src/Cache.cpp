@@ -37,7 +37,7 @@
 
 //! Should be changed when a breaking change occurs in the cache format.
 //! This will reset client's data.
-static const std::string CURRENT_CACHE_FORMAT_VERSION{"2023.03.12"};
+static const std::string CURRENT_CACHE_FORMAT_VERSION{"2023.10.22"};
 
 //! Keys used for the DB
 static const std::string_view NEXT_BATCH_KEY("next_batch");
@@ -91,9 +91,29 @@ static constexpr auto INBOUND_MEGOLM_SESSIONS_DB("inbound_megolm_sessions");
 static constexpr auto OUTBOUND_MEGOLM_SESSIONS_DB("outbound_megolm_sessions");
 //! MegolmSessionIndex -> session data about which devices have access to this
 static constexpr auto MEGOLM_SESSIONS_DATA_DB("megolm_sessions_data_db");
+//! Curve25519 key to session_id and json encoded olm session, separated by null. Dupsorted.
+static constexpr auto OLM_SESSIONS_DB("olm_sessions.v3");
+
+//! flag to be set, when the db should be compacted on startup
+bool needsCompact = false;
 
 using CachedReceipts = std::multimap<uint64_t, std::string, std::greater<uint64_t>>;
 using Receipts       = std::map<std::string, std::map<std::string, uint64_t>>;
+
+static std::string
+combineOlmSessionKeyFromCurveAndSessionId(std::string_view curve25519, std::string_view session_id)
+{
+    std::string combined(curve25519.size() + 1 + session_id.size(), '\0');
+    combined.replace(0, curve25519.size(), curve25519);
+    combined.replace(curve25519.size() + 1, session_id.size(), session_id);
+    return combined;
+}
+static std::pair<std::string_view, std::string_view>
+splitCurve25519AndOlmSessionId(std::string_view input)
+{
+    auto separator = input.find('\0');
+    return std::pair(input.substr(0, separator), input.substr(separator + 1));
+}
 
 namespace {
 std::unique_ptr<Cache> instance_ = nullptr;
@@ -130,6 +150,49 @@ ro_txn(lmdb::env &env)
     reuse_counter++;
 
     return RO_txn{txn};
+}
+
+static void
+compactDatabase(lmdb::env &from, lmdb::env &to)
+{
+    auto fromTxn = lmdb::txn::begin(from, nullptr, MDB_RDONLY);
+    auto toTxn   = lmdb::txn::begin(to);
+
+    auto rootDb  = lmdb::dbi::open(fromTxn);
+    auto dbNames = lmdb::cursor::open(fromTxn, rootDb);
+
+    std::string_view dbName;
+    while (dbNames.get(dbName, MDB_cursor_op::MDB_NEXT_NODUP)) {
+        nhlog::db()->info("Compacting db: {}", dbName);
+
+        auto flags = MDB_CREATE;
+
+        if (dbName.ends_with("/event_order") || dbName.ends_with("/order2msg") ||
+            dbName.ends_with("/pending"))
+            flags |= MDB_INTEGERKEY;
+        if (dbName.ends_with("/related") || dbName.ends_with("/states_key") ||
+            dbName == SPACES_CHILDREN_DB || dbName == SPACES_PARENTS_DB)
+            flags |= MDB_DUPSORT;
+
+        auto dbNameStr = std::string(dbName);
+        auto fromDb    = lmdb::dbi::open(fromTxn, dbNameStr.c_str(), flags);
+        auto toDb      = lmdb::dbi::open(toTxn, dbNameStr.c_str(), flags);
+
+        if (dbName.ends_with("/states_key")) {
+            lmdb::dbi_set_dupsort(fromTxn, fromDb, Cache::compare_state_key);
+            lmdb::dbi_set_dupsort(toTxn, toDb, Cache::compare_state_key);
+        }
+
+        auto fromCursor = lmdb::cursor::open(fromTxn, fromDb);
+        auto toCursor   = lmdb::cursor::open(toTxn, toDb);
+
+        std::string_view key, val;
+        while (fromCursor.get(key, val, MDB_cursor_op::MDB_NEXT)) {
+            toCursor.put(key, val, MDB_APPENDDUP);
+        }
+    }
+
+    toTxn.commit();
 }
 
 template<class T>
@@ -266,9 +329,13 @@ Cache::setup()
         nhlog::db()->info("completed state migration");
     }
 
-    env_ = lmdb::env::create();
-    env_.set_mapsize(DB_SIZE);
-    env_.set_max_dbs(MAX_DBS);
+    auto openEnv = [](const QString &name) {
+        auto e = lmdb::env::create();
+        e.set_mapsize(DB_SIZE);
+        e.set_max_dbs(MAX_DBS);
+        e.open(name.toStdString().c_str(), MDB_NOMETASYNC | MDB_NOSYNC);
+        return e;
+    };
 
     if (isInitial) {
         nhlog::db()->info("initializing LMDB");
@@ -291,7 +358,41 @@ Cache::setup()
         // corruption is an lmdb or filesystem bug. See
         // https://github.com/Nheko-Reborn/nheko/issues/1355
         // https://github.com/Nheko-Reborn/nheko/issues/1303
-        env_.open(cacheDirectory_.toStdString().c_str(), MDB_NOMETASYNC | MDB_NOSYNC);
+        env_ = openEnv(cacheDirectory_);
+
+        if (needsCompact) {
+            auto compactDir  = QStringLiteral("%1-compacting").arg(cacheDirectory_);
+            auto toDeleteDir = QStringLiteral("%1-olddb").arg(cacheDirectory_);
+            if (QFile::exists(cacheDirectory_))
+                QDir(compactDir).removeRecursively();
+            if (QFile::exists(toDeleteDir))
+                QDir(toDeleteDir).removeRecursively();
+            if (!QDir().mkpath(compactDir)) {
+                nhlog::db()->warn(
+                  "Failed to create directory '{}' for database compaction, skipping compaction!",
+                  compactDir.toStdString());
+            } else {
+                // lmdb::env_copy(env_, compactDir.toStdString().c_str(), MDB_CP_COMPACT);
+
+                // create a temporary db
+                auto temp = openEnv(compactDir);
+
+                // copy data
+                compactDatabase(env_, temp);
+
+                // close envs
+                temp.close();
+                env_.close();
+
+                // swap the databases and delete old one
+                QDir().rename(cacheDirectory_, toDeleteDir);
+                QDir().rename(compactDir, cacheDirectory_);
+                QDir(toDeleteDir).removeRecursively();
+
+                // reopen env
+                env_ = openEnv(cacheDirectory_);
+            }
+        }
     } catch (const lmdb::error &e) {
         if (e.code() != MDB_VERSION_MISMATCH && e.code() != MDB_INVALID) {
             throw std::runtime_error("LMDB initialization failed" + std::string(e.what()));
@@ -306,7 +407,7 @@ Cache::setup()
             if (!stateDir.remove(file))
                 throw std::runtime_error(("Unable to delete file " + file).toStdString().c_str());
         }
-        env_.open(cacheDirectory_.toStdString().c_str());
+        env_ = openEnv(cacheDirectory_);
     }
 
     auto txn          = lmdb::txn::begin(env_);
@@ -327,6 +428,8 @@ Cache::setup()
     inboundMegolmSessionDb_  = lmdb::dbi::open(txn, INBOUND_MEGOLM_SESSIONS_DB, MDB_CREATE);
     outboundMegolmSessionDb_ = lmdb::dbi::open(txn, OUTBOUND_MEGOLM_SESSIONS_DB, MDB_CREATE);
     megolmSessionDataDb_     = lmdb::dbi::open(txn, MEGOLM_SESSIONS_DATA_DB, MDB_CREATE);
+
+    olmSessionDb_ = lmdb::dbi::open(txn, OLM_SESSIONS_DB, MDB_CREATE);
 
     // What rooms are encrypted
     encryptedRooms_   = lmdb::dbi::open(txn, ENCRYPTED_ROOMS_DB, MDB_CREATE);
@@ -991,8 +1094,6 @@ Cache::saveOlmSessions(std::vector<std::pair<std::string, mtx::crypto::OlmSessio
 
     auto txn = lmdb::txn::begin(env_);
     for (const auto &[curve25519, session] : sessions) {
-        auto db = getOlmSessionsDb(txn, curve25519);
-
         const auto pickled    = pickle<SessionObject>(session.get(), pickle_secret_);
         const auto session_id = mtx::crypto::session_id(session.get());
 
@@ -1000,7 +1101,9 @@ Cache::saveOlmSessions(std::vector<std::pair<std::string, mtx::crypto::OlmSessio
         stored_session.pickled_session = pickled;
         stored_session.last_message_ts = timestamp;
 
-        db.put(txn, session_id, nlohmann::json(stored_session).dump());
+        olmSessionDb_.put(txn,
+                          combineOlmSessionKeyFromCurveAndSessionId(curve25519, session_id),
+                          nlohmann::json(stored_session).dump());
     }
 
     txn.commit();
@@ -1014,7 +1117,6 @@ Cache::saveOlmSession(const std::string &curve25519,
     using namespace mtx::crypto;
 
     auto txn = lmdb::txn::begin(env_);
-    auto db  = getOlmSessionsDb(txn, curve25519);
 
     const auto pickled    = pickle<SessionObject>(session.get(), pickle_secret_);
     const auto session_id = mtx::crypto::session_id(session.get());
@@ -1023,7 +1125,9 @@ Cache::saveOlmSession(const std::string &curve25519,
     stored_session.pickled_session = pickled;
     stored_session.last_message_ts = timestamp;
 
-    db.put(txn, session_id, nlohmann::json(stored_session).dump());
+    olmSessionDb_.put(txn,
+                      combineOlmSessionKeyFromCurveAndSessionId(curve25519, session_id),
+                      nlohmann::json(stored_session).dump());
 
     txn.commit();
 }
@@ -1035,10 +1139,10 @@ Cache::getOlmSession(const std::string &curve25519, const std::string &session_i
 
     try {
         auto txn = ro_txn(env_);
-        auto db  = getOlmSessionsDb(txn, curve25519);
 
         std::string_view pickled;
-        bool found = db.get(txn, session_id, pickled);
+        bool found = olmSessionDb_.get(
+          txn, combineOlmSessionKeyFromCurveAndSessionId(curve25519, session_id), pickled);
 
         if (found) {
             auto data = nlohmann::json::parse(pickled).get<StoredOlmSession>();
@@ -1057,14 +1161,20 @@ Cache::getLatestOlmSession(const std::string &curve25519)
 
     try {
         auto txn = ro_txn(env_);
-        auto db  = getOlmSessionsDb(txn, curve25519);
 
-        std::string_view session_id, pickled_session;
+        std::string_view key = curve25519, pickled_session;
 
         std::optional<StoredOlmSession> currentNewest;
 
-        auto cursor = lmdb::cursor::open(txn, db);
-        while (cursor.get(session_id, pickled_session, MDB_NEXT)) {
+        auto cursor = lmdb::cursor::open(txn, olmSessionDb_);
+        bool first  = true;
+        while (cursor.get(key, pickled_session, first ? MDB_SET_RANGE : MDB_NEXT)) {
+            first = false;
+
+            auto storedCurve = splitCurve25519AndOlmSessionId(key).first;
+            if (storedCurve != curve25519)
+                break;
+
             auto data = nlohmann::json::parse(pickled_session).get<StoredOlmSession>();
             if (!currentNewest || currentNewest->last_message_ts < data.last_message_ts)
                 currentNewest = data;
@@ -1086,14 +1196,21 @@ Cache::getOlmSessions(const std::string &curve25519)
 
     try {
         auto txn = ro_txn(env_);
-        auto db  = getOlmSessionsDb(txn, curve25519);
 
-        std::string_view session_id, unused;
+        std::string_view key = curve25519, value;
         std::vector<std::string> res;
 
-        auto cursor = lmdb::cursor::open(txn, db);
-        while (cursor.get(session_id, unused, MDB_NEXT))
+        auto cursor = lmdb::cursor::open(txn, olmSessionDb_);
+
+        bool first = true;
+        while (cursor.get(key, value, first ? MDB_SET_RANGE : MDB_NEXT)) {
+            first = false;
+
+            auto [storedCurve, session_id] = splitCurve25519AndOlmSessionId(key);
+            if (storedCurve != curve25519)
+                break;
             res.emplace_back(session_id);
+        }
         cursor.close();
 
         return res;
@@ -1601,6 +1718,46 @@ Cache::runMigrations()
            }
 
            nhlog::db()->info("Successfully updated states key database format.");
+           return true;
+       }},
+      {"2023.10.22",
+       [this]() {
+           // migrate olm sessions to a single db
+           try {
+               auto txn     = lmdb::txn::begin(env_, nullptr);
+               auto mainDb  = lmdb::dbi::open(txn);
+               auto dbNames = lmdb::cursor::open(txn, mainDb);
+
+               std::string_view dbName;
+               while (dbNames.get(dbName, MDB_NEXT)) {
+                   if (!dbName.starts_with("olm_sessions.v2/"))
+                       continue;
+
+                   auto curveKey = dbName;
+                   curveKey.remove_prefix(std::string_view("olm_sessions.v2/").size());
+
+                   auto oldDb     = lmdb::dbi::open(txn, std::string(dbName).c_str());
+                   auto olmCursor = lmdb::cursor::open(txn, oldDb);
+
+                   std::string_view session_id, json;
+                   while (olmCursor.get(session_id, json, MDB_NEXT)) {
+                       olmSessionDb_.put(
+                         txn,
+                         combineOlmSessionKeyFromCurveAndSessionId(curveKey, session_id),
+                         json);
+                   }
+
+                   oldDb.drop(txn, true);
+               }
+
+               txn.commit();
+           } catch (const lmdb::error &e) {
+               nhlog::db()->critical("Failed to convert olm sessions database in migration! {}",
+                                     e.what());
+               return false;
+           }
+
+           nhlog::db()->info("Successfully updated olm sessions database format.");
            return true;
        }},
     };
@@ -5365,6 +5522,12 @@ from_json(const nlohmann::json &obj, StoredOlmSession &msg)
 }
 
 namespace cache {
+void
+setNeedsCompactFlag()
+{
+    needsCompact = true;
+}
+
 void
 init(const QString &user_id)
 {

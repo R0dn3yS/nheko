@@ -269,7 +269,7 @@ EventDelegateChooser::DelegateIncubator::statusChanged(QQmlIncubator::Status sta
         }
 
         child->setParentItem(&chooser);
-        QQmlEngine::setObjectOwnership(child, QQmlEngine::ObjectOwnership::JavaScriptOwnership);
+        QQmlEngine::setObjectOwnership(child, QQmlEngine::ObjectOwnership::CppOwnership);
 
         // connect(child, &QQuickItem::parentChanged, child, [child](QQuickItem *) {
         //     // QTBUG-115687
@@ -303,6 +303,8 @@ EventDelegateChooser::updatePolish()
 
     auto layoutItem = [this](QQuickItem *item, int inset) {
         if (item) {
+            QObject::disconnect(item, &QQuickItem::implicitWidthChanged, this, &QQuickItem::polish);
+
             auto attached = qobject_cast<EventDelegateChooserAttachedType *>(
               qmlAttachedPropertiesObject<EventDelegateChooser>(item));
             Q_ASSERT(attached != nullptr);
@@ -336,6 +338,8 @@ EventDelegateChooser::updatePolish()
 
             item->setWidth(width);
             item->ensurePolished();
+
+            QObject::connect(item, &QQuickItem::implicitWidthChanged, this, &QQuickItem::polish);
         }
     };
 

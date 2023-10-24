@@ -20,8 +20,8 @@
 #include <QStandardPaths>
 #include <QTranslator>
 
+#include "Cache.h"
 #include "ChatPage.h"
-#include "Config.h"
 #include "Logging.h"
 #include "MainWindow.h"
 #include "MatrixClient.h"
@@ -226,6 +226,10 @@ main(int argc, char *argv[])
                   "The default is 'file,stderr'. types:{file,stderr,none}"),
       QObject::tr("type"));
     parser.addOption(logType);
+    QCommandLineOption compactDb(
+      QStringList() << QStringLiteral("C") << QStringLiteral("compact"),
+      QObject::tr("Recompacts the database which might improve performance."));
+    parser.addOption(compactDb);
 
     // This option is not actually parsed via Qt due to the need to parse it before the app
     // name is set. It only exists to keep Qt from complaining about the --profile/-p
@@ -239,6 +243,9 @@ main(int argc, char *argv[])
     parser.addOption(configName);
 
     parser.process(app);
+
+    if (parser.isSet(compactDb))
+        cache::setNeedsCompactFlag();
 
     // This check needs to happen _after_ process(), so that we actually print help for --help when
     // Nheko is already running.
