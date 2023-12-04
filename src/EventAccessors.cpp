@@ -8,10 +8,12 @@
 
 #include <algorithm>
 #include <cctype>
-#include <concepts>
 #include <type_traits>
 
+#include <mtx/events/collections.hpp>
+
 namespace {
+
 struct IsStateEvent
 {
     template<class T>
@@ -36,6 +38,15 @@ struct EventMsgType
         else if constexpr (requires(decltype(e) t) { std::string{t.content.msgtype}; })
             return mtx::events::getMessageType(e.content.msgtype);
         return mtx::events::MessageType::Unknown;
+    }
+};
+
+struct EventType
+{
+    template<class T>
+    mtx::events::EventType operator()(const mtx::events::Event<T> &e)
+    {
+        return e.type;
     }
 };
 
@@ -314,8 +325,13 @@ mtx::accessors::sender(const mtx::events::collections::TimelineEvents &event)
 QDateTime
 mtx::accessors::origin_server_ts(const mtx::events::collections::TimelineEvents &event)
 {
-    return QDateTime::fromMSecsSinceEpoch(
-      std::visit([](const auto &e) { return e.origin_server_ts; }, event));
+    return QDateTime::fromMSecsSinceEpoch(origin_server_ts_ms(event));
+}
+
+std::uint64_t
+mtx::accessors::origin_server_ts_ms(const mtx::events::collections::TimelineEvents &event)
+{
+    return std::visit([](const auto &e) { return e.origin_server_ts; }, event);
 }
 
 std::string
@@ -324,6 +340,11 @@ mtx::accessors::filename(const mtx::events::collections::TimelineEvents &event)
     return std::visit(EventFilename{}, event);
 }
 
+mtx::events::EventType
+mtx::accessors::event_type(const mtx::events::collections::TimelineEvents &event)
+{
+    return std::visit(EventType{}, event);
+}
 mtx::events::MessageType
 mtx::accessors::msg_type(const mtx::events::collections::TimelineEvents &event)
 {
@@ -465,7 +486,69 @@ mtx::accessors::serialize_event(const mtx::events::collections::TimelineEvents &
 }
 
 bool
+mtx::accessors::is_state_event(const mtx::events::collections::StateEvents &event)
+{
+    return std::visit(IsStateEvent{}, event);
+}
+
+bool
 mtx::accessors::is_state_event(const mtx::events::collections::TimelineEvents &event)
 {
     return std::visit(IsStateEvent{}, event);
+}
+
+template<typename T>
+static constexpr auto
+isMessage(const mtx::events::RoomEvent<T> &e)
+  -> std::enable_if_t<std::is_same<decltype(e.content.msgtype), std::string>::value, bool>
+{
+    return true;
+}
+
+template<typename T>
+static constexpr auto
+isMessage(const mtx::events::Event<T> &)
+{
+    return false;
+}
+
+template<typename T>
+static constexpr auto
+isMessage(const mtx::events::EncryptedEvent<T> &)
+{
+    return true;
+}
+
+static constexpr auto
+isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallInvite> &)
+{
+    return true;
+}
+
+static constexpr auto
+isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallAnswer> &)
+{
+    return true;
+}
+static constexpr auto
+isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallHangUp> &)
+{
+    return true;
+}
+
+static constexpr auto
+isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallReject> &)
+{
+    return true;
+}
+static constexpr auto
+isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallSelectAnswer> &)
+{
+    return true;
+}
+
+bool
+mtx::accessors::is_message(const mtx::events::collections::TimelineEvents &event)
+{
+    return std::visit([](const auto &e) { return isMessage(e); }, event);
 }

@@ -2,17 +2,12 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import "./delegates"
-import "./device-verification"
 import "./dialogs"
-import "./emoji"
 import "./pages"
-import "./voip"
 import "./ui"
 import Qt.labs.platform 1.1 as Platform
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Layouts
 import QtQuick.Window
 import im.nheko
 
@@ -245,7 +240,7 @@ Pane {
             }
         }
         function onOpenRoomSettingsDialog(settings) {
-            var component = Qt.createComponent("qrc:/resources/qml/dialogs/RoomSettings.qml");
+            var component = Qt.createComponent("qrc:/resources/qml/dialogs/RoomSettingsDialog.qml");
             if (component.status == Component.Ready) {
                 var roomSettings = component.createObject(timelineRoot, {
                         "roomSettings": settings

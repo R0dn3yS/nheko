@@ -26,8 +26,8 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "macos deployment target")
 option(HUNTER_ENABLED "Enable Hunter package manager" OFF)
 include("cmake/HunterGate.cmake")
 HunterGate(
-    URL "https://github.com/cpp-pm/hunter/archive/v0.24.8.tar.gz"
-    SHA1 "ca7838dded9a1811b04ffd56175f629e0af82d3d"
+    URL "https://github.com/cpp-pm/hunter/archive/v0.25.2.tar.gz"
+    SHA1 "560c000d5b6c972d41c2caf44f24189c868cc404"
     LOCAL
 )
 
@@ -48,6 +48,8 @@ macro(hunter_add_package_safe)
     message("pkg_conf_path: '$ENV{PKG_CONFIG_PATH}', pkg_conf_libdir: '$ENV{PKG_CONFIG_LIBDIR}'")
 endmacro()
 
+project(nheko LANGUAGES CXX C)
+
 option(USE_BUNDLED_SPDLOG "Use the bundled version of spdlog." ${HUNTER_ENABLED})
 option(USE_BUNDLED_OLM "Use the bundled version of libolm." ${HUNTER_ENABLED})
 option(USE_BUNDLED_GTEST "Use the bundled version of Google Test." ${HUNTER_ENABLED})
@@ -63,12 +65,13 @@ option(USE_BUNDLED_COEURL "Use a bundled version of the Curl wrapper"
 option(USE_BUNDLED_LIBEVENT "Use the bundled version of libevent." ${HUNTER_ENABLED})
 option(USE_BUNDLED_LIBCURL "Use the bundled version of libcurl." ${HUNTER_ENABLED})
 option(USE_BUNDLED_RE2 "Use the bundled version of re2." ${HUNTER_ENABLED})
+option(USE_BUNDLED_KDSINGLEAPPLICATION "Use the bundled version of KDSingleApplication." ${HUNTER_ENABLED})
 option(USE_BUNDLED_CPPHTTPLIB "Use the bundled version of cpp-httplib." ON)
 option(USE_BUNDLED_BLURHASH "Use the bundled version of blurhash." ON)
 
 include(CMakeDependentOption)
 set(VOIP_DEFAULT ON)
-if(APPLE OR WIN32)
+if(APPLE OR WIN32 OR HAIKU)
     set(VOIP_DEFAULT OFF)
 endif()
 option(VOIP "Whether to enable voip support. Disable this, if you don't have gstreamer." ${VOIP_DEFAULT})
@@ -107,8 +110,6 @@ endif()
 
 # Include Qt basic functions
 include(QtCommon)
-
-project(nheko LANGUAGES CXX C)
 
 include(GNUInstallDirs)
 
@@ -251,15 +252,24 @@ if(USE_BUNDLED_QTKEYCHAIN)
         GIT_REPOSITORY https://github.com/frankosterfeld/qtkeychain.git
         GIT_TAG        v0.14.0
     )
-    if(BUILD_SHARED_LIBS)
-        set(QTKEYCHAIN_STATIC OFF CACHE INTERNAL "")
-    else()
-        set(QTKEYCHAIN_STATIC ON CACHE INTERNAL "")
-    endif()
     set(BUILD_TEST_APPLICATION OFF CACHE INTERNAL "")
     FetchContent_MakeAvailable(qt6keychain)
 else()
     find_package(Qt6Keychain REQUIRED)
+endif()
+
+if(USE_BUNDLED_KDSINGLEAPPLICATION)
+    include(FetchContent)
+    set(KDSingleApplication_QT6 ON CACHE BOOL INTERNAL)
+    set(KDSingleApplication_EXAMPLES OFF CACHE BOOL INTERNAL)
+    FetchContent_Declare(
+        kdsingleapplication
+        GIT_REPOSITORY https://github.com/KDAB/KDSingleApplication.git
+        GIT_TAG        v1.0.0
+    )
+    FetchContent_MakeAvailable(kdsingleapplication)
+else()
+    find_package(KDSingleApplication-qt6 REQUIRED)
 endif()
 
 if(Qt6Widgets_FOUND)
@@ -595,7 +605,7 @@ if(USE_BUNDLED_MTXCLIENT)
     FetchContent_Declare(
         MatrixClient
             GIT_REPOSITORY https://github.com/Nheko-Reborn/mtxclient.git
-            GIT_TAG        8936559c00542528a7776d774fccb7ff674c9c7f
+            GIT_TAG        72f9a20c048c3482386b0916ef76fb9f4d890be8
     )
     set(BUILD_LIB_EXAMPLES OFF CACHE INTERNAL "")
     set(BUILD_LIB_TESTS OFF CACHE INTERNAL "")
@@ -606,16 +616,12 @@ endif()
 
 if(VOIP)
     include(FindPkgConfig)
-    pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-sdp-1.0>=1.18 gstreamer-webrtc-1.0>=1.18)
+    pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-sdp-1.0>=1.18 gstreamer-webrtc-1.0>=1.18 gstreamer-gl-1.0)
 endif()
 
 if(X11 AND NOT WIN32 AND NOT APPLE AND NOT HAIKU)
     pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb xcb-ewmh)
 endif()
-
-# single instance functionality
-set(QAPPLICATION_CLASS QApplication CACHE STRING "Inheritance class for SingleApplication")
-add_subdirectory(third_party/SingleApplication-3.3.2/)
 
 feature_summary(WHAT ALL INCLUDE_QUIET_PACKAGES FATAL_ON_MISSING_REQUIRED_PACKAGES)
 
@@ -772,11 +778,13 @@ set(QML_SOURCES
     resources/qml/dialogs/RawMessageDialog.qml
     resources/qml/dialogs/ReadReceipts.qml
     resources/qml/dialogs/ReCaptchaDialog.qml
+    resources/qml/dialogs/ReportMessage.qml
     resources/qml/dialogs/RoomDirectory.qml
     resources/qml/dialogs/RoomMembers.qml
     resources/qml/dialogs/AllowedRoomsSettingsDialog.qml
-    resources/qml/dialogs/RoomSettings.qml
+    resources/qml/dialogs/RoomSettingsDialog.qml
     resources/qml/dialogs/UserProfile.qml
+    resources/qml/dialogs/IgnoredUsers.qml
     resources/qml/emoji/StickerPicker.qml
     resources/qml/pages/LoginPage.qml
     resources/qml/pages/RegisterPage.qml
@@ -804,7 +812,7 @@ qt_add_qml_module(nheko
     NO_RESOURCE_TARGET_PATH
     RESOURCE_PREFIX "/"
     VERSION 1.1
-    DEPENDENCIES QtQml QtQuick # https://bugreports.qt.io/browse/QTBUG-102554
+    DEPENDENCIES QtQuick QtQml.Models
     QML_FILES
     ${QML_SOURCES}
     SOURCES
@@ -814,6 +822,10 @@ qt_add_qml_module(nheko
     #qt_target_qml_sources(nheko
     #   #PREFIX "/"
     #)
+
+#set_target_properties(nheko PROPERTIES
+#    QT_QMLCACHEGEN_ARGUMENTS "--verbose"
+#)
 
 #
 # Bundle translations
@@ -861,6 +873,9 @@ endif()
 if(USE_BUNDLED_QTKEYCHAIN)
     target_include_directories(nheko PRIVATE ${qt6keychain_SOURCE_DIR} ${qt6keychain_BINARY_DIR})
 endif()
+if(USE_BUNDLED_KDSINGLEAPPLICATION)
+    target_include_directories(nheko PRIVATE ${kdsingleapplication_SOURCE_DIR} ${kdsingleapplication_BINARY_DIR})
+endif()
 
 if(NOT JSON_ImplicitConversions)
     set_target_properties(nlohmann_json::nlohmann_json PROPERTIES
@@ -882,10 +897,15 @@ target_link_libraries(nheko PRIVATE
     Qt::QmlPrivate
     Qt::QuickControls2
     qt6keychain
+    KDAB::kdsingleapplication
     nlohmann_json::nlohmann_json
     lmdbxx::lmdbxx
-    liblmdb::lmdb
-    SingleApplication::SingleApplication)
+    liblmdb::lmdb)
+    
+if(UNIX)
+    # for wayland activation tokens
+    target_link_libraries(nheko PRIVATE Qt::GuiPrivate)
+endif()
 
 if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.16.0")
     target_precompile_headers(nheko
@@ -906,6 +926,10 @@ endif()
 
 if(MSVC)
     target_link_libraries(nheko PRIVATE ntdll)
+endif()
+
+if(HAIKU)
+    target_link_libraries(nheko PRIVATE network)
 endif()
 
 if(QML_DEBUGGING)

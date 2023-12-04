@@ -25,7 +25,7 @@ build-clazy:
     - export CMAKE_BUILD_PARALLEL_LEVEL=$(cat /proc/cpuinfo | awk '/^processor/{print $3}' | wc -l)
     - cmake -GNinja -H. -Bbuild
         -DCMAKE_INSTALL_PREFIX=.deps/usr
-        -DHUNTER_ENABLED=OFF -DBUILD_SHARED_LIBS=OFF -DUSE_BUNDLED_OPENSSL=ON -DUSE_BUNDLED_MTXCLIENT=ON -DUSE_BUNDLED_COEURL=ON -DUSE_BUNDLED_OLM=ON -DUSE_BUNDLED_QTKEYCHAIN=ON
+        -DHUNTER_ENABLED=OFF -DBUILD_SHARED_LIBS=OFF -DUSE_BUNDLED_OPENSSL=ON -DUSE_BUNDLED_MTXCLIENT=ON -DUSE_BUNDLED_COEURL=ON -DUSE_BUNDLED_OLM=ON -DUSE_BUNDLED_QTKEYCHAIN=ON -DUSE_BUNDLED_KDSINGLEAPPLICATION=ON
         -DVOIP=OFF
         -DCMAKE_BUILD_TYPE=Release
         -DCI_BUILD=ON -DFETCHCONTENT_QUIET=OFF -DCMAKE_CXX_COMPILER=clazy
@@ -62,7 +62,7 @@ build-clazy:
     - cmake -GNinja -H. -Bbuild
         -DCMAKE_INSTALL_PREFIX=.deps/usr
         -DHUNTER_ROOT="../.hunter"
-        -DHUNTER_ENABLED=ON -DBUILD_SHARED_LIBS=OFF -DUSE_BUNDLED_OPENSSL=ON -DUSE_BUNDLED_LMDB=OFF -DUSE_BUNDLED_QTKEYCHAIN=OFF
+        -DHUNTER_ENABLED=ON -DBUILD_SHARED_LIBS=OFF -DUSE_BUNDLED_OPENSSL=ON -DUSE_BUNDLED_LMDB=OFF -DUSE_BUNDLED_QTKEYCHAIN=OFF -DUSE_BUNDLED_KDSINGLEAPPLICATION=ON
         -DVOIP=OFF
         -DCMAKE_BUILD_TYPE=Release -DHUNTER_CONFIGURATION_TYPES=Release
         -DCI_BUILD=ON -DFETCHCONTENT_QUIET=OFF
@@ -117,6 +117,7 @@ build-tw:
         "cmake(Qt6Widgets)"
         "cmake(Qt6Gui)"
         "qt6-qml-private-devel"
+        "qt6-gui-private-devel"
         "pkgconfig(libcurl)"
         "pkgconfig(libevent)"
         "pkgconfig(gstreamer-webrtc-1.0)"
@@ -128,7 +129,7 @@ build-tw:
     - export PATH="/usr/lib64/ccache:${PATH}"
     - cmake -GNinja -H. -Bbuild
         -DCMAKE_INSTALL_PREFIX=.deps/usr
-        -DUSE_BUNDLED_MTXCLIENT=ON -DUSE_BUNDLED_COEURL=ON -DUSE_BUNDLED_LMDBXX=ON
+        -DUSE_BUNDLED_MTXCLIENT=ON -DUSE_BUNDLED_COEURL=ON -DUSE_BUNDLED_LMDBXX=ON -DUSE_BUNDLED_KDSINGLEAPPLICATION=ON
         -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_CXX_FLAGS="-Wno-error=array-bounds"
         -DCI_BUILD=ON -DFETCHCONTENT_QUIET=OFF
@@ -173,7 +174,8 @@ codesign-macos:
   before_script:
     - pip3 install dmgbuild
   script:
-    - export PATH=/Users/jdonof/Qt/6.5.1/macos/bin:${PATH}
+    - export QTPATH=(/Users/jdonof/Qt/6.*/macos/bin)
+    - export PATH=${QTPATH}:${PATH}
     - ./.ci/macos/notarize.sh
   after_script:
     - ./.ci/upload-nightly-gitlab.sh artifacts/nheko-${CI_COMMIT_SHORT_SHA}-${PLAT}.dmg
@@ -282,7 +284,7 @@ build-flatpak:
     - cmake -GNinja -H. -Bbuild
         -DCMAKE_INSTALL_PREFIX=/usr
         -DHUNTER_ROOT=".hunter"
-        -DHUNTER_ENABLED=ON -DBUILD_SHARED_LIBS=OFF -DUSE_BUNDLED_OPENSSL=ON -DUSE_BUNDLED_LMDB=OFF -DUSE_BUNDLED_QTKEYCHAIN=OFF -DUSE_BUNDLED_LIBEVENT=OFF
+        -DHUNTER_ENABLED=ON -DBUILD_SHARED_LIBS=OFF -DUSE_BUNDLED_OPENSSL=ON -DUSE_BUNDLED_LMDB=OFF -DUSE_BUNDLED_QTKEYCHAIN=OFF -DUSE_BUNDLED_LIBEVENT=OFF -DUSE_BUNDLED_KDSINGLEAPPLICATION=ON
         -DVOIP=OFF -DMAN=OFF
         -DCMAKE_BUILD_TYPE=Release -DHUNTER_CONFIGURATION_TYPES=Release
         -DCI_BUILD=ON -DFETCHCONTENT_QUIET=OFF
@@ -312,7 +314,7 @@ linting:
   image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/alpine:latest
   tags: [docker]
   before_script:
-    - apk update && apk add make git python3 py3-pip
+    - apk update && apk add make git python3 py3-pip qt6-qtdeclarative-dev
     - apk add clang-extra-tools --repository=http://dl-cdn.alpinelinux.org/alpine/edge/main
     - export PATH="$PATH:/root/.local/bin"
     - pip3 install --user reuse

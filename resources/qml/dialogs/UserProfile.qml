@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import ".."
-import "../device-verification"
 import "../ui"
 import "../components"
 import QtQuick 2.15
@@ -56,8 +55,8 @@ ApplicationWindow {
                 id: displayAvatar
 
                 url: profile.avatarUrl.replace("mxc://", "image://MxcImage/")
-                height: 130
-                width: 130
+                Layout.preferredHeight: 130
+                Layout.preferredWidth: 130
                 displayName: profile.displayName
                 userid: profile.userid
                 Layout.alignment: Qt.AlignHCenter
@@ -292,13 +291,24 @@ ApplicationWindow {
                 ImageButton {
                     Layout.preferredHeight: 24
                     Layout.preferredWidth: 24
+                    image: ":/icons/icons/ui/volume-off-indicator.svg"
+                    hoverEnabled: true
+                    ToolTip.visible: hovered
+                    ToolTip.text: profile.ignored ? qsTr("Unignore the user.") : qsTr("Ignore the user.")
+                    buttonTextColor: profile.ignored ? Nheko.theme.red : palette.buttonText
+                    onClicked: profile.ignored = !profile.ignored
+                    visible: !profile.isSelf
+                }
+
+                ImageButton {
+                    Layout.preferredHeight: 24
+                    Layout.preferredWidth: 24
                     image: ":/icons/icons/ui/refresh.svg"
                     hoverEnabled: true
                     ToolTip.visible: hovered
                     ToolTip.text: qsTr("Refresh device list.")
                     onClicked: profile.refreshDevices()
                 }
-
             }
 
             TabBar {
@@ -487,8 +497,8 @@ ApplicationWindow {
                     Layout.leftMargin: Nheko.paddingMedium
 
                     property int avatarSize: Math.ceil(fontMetrics.lineSpacing * 1.6)
-                    height: avatarSize
-                    width: avatarSize
+                    Layout.preferredHeight: avatarSize
+                    Layout.preferredWidth: avatarSize
                     url: avatarUrl.replace("mxc://", "image://MxcImage/")
                     roomid: roomId
                     displayName: roomName

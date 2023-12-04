@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <thread>
 #include <type_traits>
+#include <utility>
 
 #include <QClipboard>
 #include <QDesktopServices>
@@ -17,7 +18,8 @@
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QVariant>
-#include <utility>
+
+#include <nlohmann/json.hpp>
 
 #include "Cache.h"
 #include "Cache_p.h"
@@ -258,8 +260,7 @@ toRoomEventType(const mtx::events::collections::TimelineEvents &event)
 QString
 toRoomEventTypeString(const mtx::events::collections::TimelineEvents &event)
 {
-    return std::visit([](const auto &e) { return QString::fromStdString(to_string(e.type)); },
-                      event);
+    return QString::fromStdString(to_string(mtx::accessors::event_type(event)));
 }
 
 mtx::events::EventType
@@ -739,8 +740,10 @@ TimelineModel::data(const mtx::events::collections::TimelineEvents &event, int r
                   } else if constexpr (t == mtx::events::EventType::RoomPinnedEvents)
                       return tr("%1 changed the pinned messages.")
                         .arg(displayName(QString::fromStdString(e.sender)));
+                  else if constexpr (t == mtx::events::EventType::RoomJoinRules)
+                      return formatJoinRuleEvent(e);
                   else if constexpr (t == mtx::events::EventType::ImagePackInRoom)
-                      formatImagePackEvent(e);
+                      return formatImagePackEvent(e);
                   else if constexpr (t == mtx::events::EventType::RoomCanonicalAlias)
                       return tr("%1 changed the addresses for this room.")
                         .arg(displayName(QString::fromStdString(e.sender)));
@@ -853,8 +856,7 @@ TimelineModel::data(const mtx::events::collections::TimelineEvents &event, int r
                   std::get_if<mtx::events::EncryptedEvent<mtx::events::msg::Encrypted>>(
                     &*encrypted_event)) {
                 return olm::calculate_trust(
-                  encrypted->sender,
-                  MegolmSessionIndex(room_id_.toStdString(), encrypted->content));
+                  encrypted->sender, room_id_.toStdString(), encrypted->content);
             }
         }
         return crypto::Trust::Unverified;
@@ -1269,56 +1271,6 @@ TimelineModel::addEvents(const mtx::responses::Timeline &timeline)
     updateLastMessage();
 }
 
-template<typename T>
-static constexpr auto
-isMessage(const mtx::events::RoomEvent<T> &e)
-  -> std::enable_if_t<std::is_same<decltype(e.content.msgtype), std::string>::value, bool>
-{
-    return true;
-}
-
-template<typename T>
-static constexpr auto
-isMessage(const mtx::events::Event<T> &)
-{
-    return false;
-}
-
-template<typename T>
-static constexpr auto
-isMessage(const mtx::events::EncryptedEvent<T> &)
-{
-    return true;
-}
-
-static constexpr auto
-isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallInvite> &)
-{
-    return true;
-}
-
-static constexpr auto
-isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallAnswer> &)
-{
-    return true;
-}
-static constexpr auto
-isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallHangUp> &)
-{
-    return true;
-}
-
-static constexpr auto
-isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallReject> &)
-{
-    return true;
-}
-static constexpr auto
-isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallSelectAnswer> &)
-{
-    return true;
-}
-
 // Workaround. We also want to see a room at the top, if we just joined it
 auto
 isYourJoin(const mtx::events::StateEvent<mtx::events::state::Member> &e, EventStore &events)
@@ -1383,7 +1335,7 @@ TimelineModel::updateLastMessage()
             }
             return;
         }
-        if (!std::visit([](const auto &e) -> bool { return isMessage(e); }, *event))
+        if (!mtx::accessors::is_message(*event))
             continue;
 
         auto description = utils::getMessageDescription(
@@ -1607,6 +1559,14 @@ TimelineModel::redactAllFromUser(const QString &userid, const QString &reason)
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 }
+
+void
+TimelineModel::reportEvent(const QString &eventId, const QString &reason, const int score)
+{
+    http::client()->report_event(
+      room_id_.toStdString(), eventId.toStdString(), reason.toStdString(), score);
+}
+
 void
 TimelineModel::redactEvent(const QString &id, const QString &reason)
 {
@@ -2363,20 +2323,13 @@ TimelineModel::formatTypingUsers(const QStringList &users, const QColor &bg)
 }
 
 QString
-TimelineModel::formatJoinRuleEvent(const QString &id)
+TimelineModel::formatJoinRuleEvent(
+  const mtx::events::StateEvent<mtx::events::state::JoinRules> &event) const
 {
-    auto e = events.get(id.toStdString(), "");
-    if (!e)
-        return {};
-
-    auto event = std::get_if<mtx::events::StateEvent<mtx::events::state::JoinRules>>(e);
-    if (!event)
-        return {};
-
-    QString user = QString::fromStdString(event->sender);
+    QString user = QString::fromStdString(event.sender);
     QString name = utils::replaceEmoji(displayName(user));
 
-    switch (event->content.join_rule) {
+    switch (event.content.join_rule) {
     case mtx::events::state::JoinRule::Public:
         return tr("%1 opened the room to the public.").arg(name);
     case mtx::events::state::JoinRule::Invite:
@@ -2385,7 +2338,7 @@ TimelineModel::formatJoinRuleEvent(const QString &id)
         return tr("%1 allowed to join this room by knocking.").arg(name);
     case mtx::events::state::JoinRule::Restricted: {
         QStringList rooms;
-        for (const auto &r : event->content.allow) {
+        for (const auto &r : event.content.allow) {
             if (r.type == mtx::events::state::JoinAllowanceType::RoomMembership)
                 rooms.push_back(QString::fromStdString(r.room_id));
         }
@@ -3329,7 +3282,9 @@ TimelineModel::widgetLinks() const
         // compat with some widgets, i.e. FOSDEM
         url.replace("$theme", theme);
 
-        url = QUrl::toPercentEncoding(url, "/:@?#&=%");
+        // See https://bugreports.qt.io/browse/QTBUG-110446
+        // We want to make sure that urls are encoded, even if the source is untrustworthy.
+        url = QUrl(url).toEncoded();
 
         list.push_back(
           QLatin1String("<a href='%1'>%2</a>")

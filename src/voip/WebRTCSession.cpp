@@ -25,6 +25,7 @@
 #ifdef GSTREAMER_AVAILABLE
 extern "C"
 {
+#include "gst/gl/gstgldisplay.h"
 #include "gst/gst.h"
 #include "gst/sdp/sdp.h"
 
@@ -333,7 +334,7 @@ newVideoSinkChain(GstElement *pipe)
     GstElement *compositor     = gst_element_factory_make("compositor", "compositor");
     GstElement *glupload       = gst_element_factory_make("glupload", nullptr);
     GstElement *glcolorconvert = gst_element_factory_make("glcolorconvert", nullptr);
-    GstElement *qmlglsink      = gst_element_factory_make("qmlglsink", nullptr);
+    GstElement *qmlglsink      = gst_element_factory_make("qml6glsink", nullptr);
     GstElement *glsinkbin      = gst_element_factory_make("glsinkbin", nullptr);
     g_object_set(compositor, "background", 1, nullptr);
     g_object_set(qmlglsink, "widget", WebRTCSession::instance().getVideoItem(), nullptr);
@@ -346,6 +347,21 @@ newVideoSinkChain(GstElement *pipe)
     gst_element_sync_state_with_parent(glupload);
     gst_element_sync_state_with_parent(glcolorconvert);
     gst_element_sync_state_with_parent(glsinkbin);
+
+    // to propagate context (hopefully)
+    gst_element_set_state(qmlglsink, GST_STATE_READY);
+
+    // Workaround: On wayland, when egl is used, gstreamer might terminate the display connection.
+    // Prevent that by "leaking" a reference to the display. See
+    // https://gitlab.freedesktop.org/gstreamer/gstreamer/-/merge_requests/3743
+    if (QGuiApplication::platformName() == QStringLiteral("wayland")) {
+        auto context = gst_element_get_context(qmlglsink, "gst.gl.GLDisplay");
+        if (context) {
+            GstGLDisplay *display;
+            gst_context_get_gl_display(context, &display);
+        }
+    }
+
     return queue;
 }
 
@@ -609,7 +625,7 @@ WebRTCSession::havePlugins(bool isVideo,
       "glcolorconvert",
       "glsinkbin",
       "glupload",
-      "qmlglsink",
+      "qml6glsink",
       "rtpvp8pay",
       "tee",
       "videoconvert",
@@ -672,7 +688,7 @@ WebRTCSession::havePlugins(bool isVideo,
 
     if (isVideo || isScreenshare) {
         // load qmlglsink to register GStreamer's GstGLVideoItem QML type
-        GstElement *qmlglsink = gst_element_factory_make("qmlglsink", nullptr);
+        GstElement *qmlglsink = gst_element_factory_make("qml6glsink", nullptr);
         gst_object_unref(qmlglsink);
     }
     return true;

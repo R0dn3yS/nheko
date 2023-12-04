@@ -22,7 +22,6 @@
 #include "Logging.h"
 #include "MatrixClient.h"
 #include "UserSettingsPage.h"
-#include "Utils.h"
 
 namespace {
 auto client_ = std::make_unique<mtx::crypto::OlmClient>();
@@ -630,6 +629,7 @@ encrypt_group_message(const std::string &room_id, const std::string &device_id, 
         // Saving the new megolm session.
         GroupSessionData session_data{};
         session_data.message_index              = 0;
+        session_data.trusted                    = true;
         session_data.timestamp                  = QDateTime::currentMSecsSinceEpoch();
         session_data.sender_claimed_ed25519_key = olm::client()->identity_keys().ed25519;
         session_data.sender_key                 = olm::client()->identity_keys().curve25519;
@@ -754,13 +754,16 @@ create_inbound_megolm_session(const mtx::events::DeviceEvent<mtx::events::msg::R
     index.session_id = roomKey.content.session_id;
 
     try {
+        auto megolm_session =
+          olm::client()->init_inbound_group_session(roomKey.content.session_key);
+
         GroupSessionData data{};
         data.forwarding_curve25519_key_chain = {sender_key};
         data.sender_claimed_ed25519_key      = sender_ed25519;
         data.sender_key                      = sender_key;
 
-        auto megolm_session =
-          olm::client()->init_inbound_group_session(roomKey.content.session_key);
+        data.trusted = olm_inbound_group_session_is_verified(megolm_session.get());
+
         backup_session_key(index, data, megolm_session);
         cache::saveInboundMegolmSession(index, std::move(megolm_session), data);
     } catch (const lmdb::error &e) {
@@ -793,14 +796,9 @@ import_inbound_megolm_session(
         data.forwarding_curve25519_key_chain = roomKey.content.forwarding_curve25519_key_chain;
         data.sender_claimed_ed25519_key      = roomKey.content.sender_claimed_ed25519_key;
         data.sender_key                      = roomKey.content.sender_key;
-        // may have come from online key backup, so we can't trust it...
-        data.trusted = false;
-        // if we got it forwarded from the sender, assume it is trusted. They may still have
-        // used key backup, but it is unlikely.
-        if (roomKey.content.forwarding_curve25519_key_chain.size() == 1 &&
-            roomKey.content.forwarding_curve25519_key_chain.back() == roomKey.content.sender_key) {
-            data.trusted = true;
-        }
+        // Keys from online key backup won't have a signature, so they will be untrusted. But the
+        // original sender might send us a signed session.
+        data.trusted = olm_inbound_group_session_is_verified(megolm_session.get());
 
         backup_session_key(index, data, megolm_session);
         cache::saveInboundMegolmSession(index, std::move(megolm_session), data);
@@ -1024,6 +1022,7 @@ lookup_keybackup(const std::string &room, const std::string &session_id)
               data.forwarding_curve25519_key_chain = session.forwarding_curve25519_key_chain;
               data.sender_claimed_ed25519_key      = session.sender_claimed_keys["ed25519"];
               data.sender_key                      = session.sender_key;
+
               // online key backup can't be trusted, because anyone can upload to it.
               data.trusted = false;
 
@@ -1286,15 +1285,33 @@ decryptEvent(const MegolmSessionIndex &index,
 }
 
 crypto::Trust
-calculate_trust(const std::string &user_id, const MegolmSessionIndex &index)
+calculate_trust(const std::string &user_id,
+                const std::string &room_id,
+                const mtx::events::msg::Encrypted &event)
 {
-    auto status              = cache::client()->verificationStatus(user_id);
+    auto index               = MegolmSessionIndex(room_id, event);
     auto megolmData          = cache::client()->getMegolmSessionData(index);
-    crypto::Trust trustlevel = crypto::Trust::Unverified;
+    crypto::Trust trustlevel = crypto::Trust::MessageUnverified;
+
+    try {
+        auto session = cache::client()->getInboundMegolmSession(index);
+        if (!session) {
+            return trustlevel;
+        }
+
+        olm::client()->decrypt_group_message(session.get(), event.ciphertext);
+    } catch (const lmdb::error &e) {
+        return trustlevel;
+    } catch (const mtx::crypto::olm_exception &e) {
+        return trustlevel;
+    }
+
+    auto status = cache::client()->verificationStatus(user_id);
 
     if (megolmData && megolmData->trusted &&
-        status.verified_device_keys.count(megolmData->sender_key))
+        status.verified_device_keys.count(megolmData->sender_key)) {
         trustlevel = status.verified_device_keys.at(megolmData->sender_key);
+    }
 
     return trustlevel;
 }
@@ -1666,10 +1683,10 @@ request_cross_signing_keys()
         });
     };
 
-    request(mtx::secret_storage::secrets::cross_signing_master);
-    request(mtx::secret_storage::secrets::cross_signing_self_signing);
-    request(mtx::secret_storage::secrets::cross_signing_user_signing);
-    request(mtx::secret_storage::secrets::megolm_backup_v1);
+    request(std::string(mtx::secret_storage::secrets::cross_signing_master));
+    request(std::string(mtx::secret_storage::secrets::cross_signing_self_signing));
+    request(std::string(mtx::secret_storage::secrets::cross_signing_user_signing));
+    request(std::string(mtx::secret_storage::secrets::megolm_backup_v1));
 }
 
 namespace {
@@ -1726,22 +1743,22 @@ download_cross_signing_keys()
 
                             if (backup_key && !backup_key->encrypted.empty())
                                 secrets[backup_key->encrypted.begin()->first]
-                                       [secrets::megolm_backup_v1] =
+                                       [std::string(secrets::megolm_backup_v1)] =
                                          backup_key->encrypted.begin()->second;
 
                             if (master_key && !master_key->encrypted.empty())
                                 secrets[master_key->encrypted.begin()->first]
-                                       [secrets::cross_signing_master] =
+                                       [std::string(secrets::cross_signing_master)] =
                                          master_key->encrypted.begin()->second;
 
                             if (self_signing_key && !self_signing_key->encrypted.empty())
                                 secrets[self_signing_key->encrypted.begin()->first]
-                                       [secrets::cross_signing_self_signing] =
+                                       [std::string(secrets::cross_signing_self_signing)] =
                                          self_signing_key->encrypted.begin()->second;
 
                             if (user_signing_key && !user_signing_key->encrypted.empty())
                                 secrets[user_signing_key->encrypted.begin()->first]
-                                       [secrets::cross_signing_user_signing] =
+                                       [std::string(secrets::cross_signing_user_signing)] =
                                          user_signing_key->encrypted.begin()->second;
 
                             for (const auto &[key, secret_] : secrets)

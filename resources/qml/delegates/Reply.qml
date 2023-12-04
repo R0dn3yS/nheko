@@ -2,12 +2,10 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import Qt.labs.platform 1.1 as Platform
-import QtQuick 2.12
-import QtQuick.Controls 2.3
-import QtQuick.Layouts 1.2
-import QtQuick.Window 2.13
-import im.nheko 1.0
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Window
+import im.nheko
 import "../"
 
 AbstractButton {
@@ -22,9 +20,10 @@ AbstractButton {
 
     property string userId: eventId ? room.dataById(eventId, Room.UserId, "") : ""
     property string userName: eventId ? room.dataById(eventId, Room.UserName, "") : ""
-    implicitHeight: replyContainer.implicitHeight
+    implicitHeight: replyContainer.height
     implicitWidth: replyContainer.implicitWidth
     required property int maxWidth
+    property bool limitHeight: false
 
     NhekoCursorShape {
         anchors.fill: parent
@@ -45,17 +44,22 @@ AbstractButton {
         id: timelineEvent
 
         isStateEvent: false
-        room: room_
+        room: r.room_
         eventId: r.eventId
         replyTo: ""
         mainInset: 4 + Nheko.paddingMedium
         maxWidth: r.maxWidth
+        limitAsReply: r.limitHeight
 
         //height: replyContainer.implicitHeight
         data: Row {
             id: replyContainer
 
             spacing: Nheko.paddingSmall
+
+            clip: r.limitHeight
+
+            height: Math.min( timelineEvent.main?.height, timelineView.height / 10) + Nheko.paddingSmall + usernameBtn.height
 
             Rectangle {
                 id: colorline
@@ -72,6 +76,7 @@ AbstractButton {
 
                 AbstractButton {
                     id: usernameBtn
+
 
                     contentItem: Label {
                         id: userName_

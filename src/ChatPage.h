@@ -6,23 +6,15 @@
 
 #include <atomic>
 #include <optional>
-#include <variant>
 
-#include <mtx/common.hpp>
 #include <mtx/events.hpp>
-#include <mtx/events/encrypted.hpp>
-#include <mtx/events/member.hpp>
-#include <mtx/events/policy_rules.hpp>
 #include <mtx/events/presence.hpp>
 #include <mtx/secret_storage.hpp>
 
-#include <QMap>
-#include <QPoint>
+#include <QDateTime>
 #include <QSharedPointer>
 #include <QTimer>
 
-#include "CacheCryptoStructs.h"
-#include "CacheStructs.h"
 #include "ui/RoomSummary.h"
 
 class TimelineViewManager;
@@ -192,21 +184,21 @@ private:
     void tryInitialSync();
     void trySync();
     void verifyOneTimeKeyCountAfterStartup();
-    void ensureOneTimeKeyCount(const std::map<std::string, uint16_t> &counts,
+    void ensureOneTimeKeyCount(const std::map<std::string_view, uint16_t> &counts,
                                const std::optional<std::vector<std::string>> &fallback_keys);
     void removeOldFallbackKey();
     void getProfileInfo();
     void getBackupVersion();
 
-    using UserID      = QString;
-    using Membership  = mtx::events::StateEvent<mtx::events::state::Member>;
-    using Memberships = std::map<std::string, Membership>;
-
     void loadStateFromCache();
     void resetUI();
 
-    template<class Collection>
-    Memberships getMemberships(const std::vector<Collection> &events) const;
+    // returns if the user had no interaction with Nheko for quite a while, which means we set our
+    // presence to unavailable if automatic presence is enabled
+    bool shouldBeUnavailable() const;
+    // If we should throttle sync processing to reduce CPU load, if people are spamming messages and
+    // we aren't looking
+    bool shouldThrottleSync() const;
 
     template<typename T>
     void connectCallMessage();
@@ -225,21 +217,7 @@ private:
     std::unique_ptr<mtx::pushrules::PushRuleEvaluator> pushrules;
 
     QDateTime lastSpacesUpdate = QDateTime::currentDateTime();
+
+    // Stores when our windows lost focus. Invalid when our windows have focus.
+    QDateTime lastWindowActive;
 };
-
-template<class Collection>
-std::map<std::string, mtx::events::StateEvent<mtx::events::state::Member>>
-ChatPage::getMemberships(const std::vector<Collection> &collection) const
-{
-    std::map<std::string, mtx::events::StateEvent<mtx::events::state::Member>> memberships;
-
-    using Member = mtx::events::StateEvent<mtx::events::state::Member>;
-
-    for (const auto &event : collection) {
-        if (auto member = std::get_if<Member>(event)) {
-            memberships.emplace(member->state_key, *member);
-        }
-    }
-
-    return memberships;
-}

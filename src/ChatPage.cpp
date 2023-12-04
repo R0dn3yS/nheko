@@ -6,6 +6,11 @@
 #include <QInputDialog>
 #include <QMessageBox>
 
+#include <algorithm>
+#include <unordered_set>
+
+#include <nlohmann/json.hpp>
+
 #include <mtx/responses.hpp>
 
 #include "AvatarProvider.h"
@@ -21,15 +26,12 @@
 #include "encryption/DeviceVerificationFlow.h"
 #include "encryption/Olm.h"
 #include "ui/RoomSummary.h"
-#include "ui/Theme.h"
 #include "ui/UserProfile.h"
 #include "voip/CallManager.h"
 
 #include "notifications/Manager.h"
 
 #include "timeline/TimelineViewManager.h"
-
-#include "blurhash.hpp"
 
 ChatPage *ChatPage::instance_                    = nullptr;
 static constexpr int CHECK_CONNECTIVITY_INTERVAL = 15'000;
@@ -282,8 +284,8 @@ ChatPage::ChatPage(QSharedPointer<UserSettings> userSettings, QObject *parent)
                             continue;
 
                         mtx::events::collections::TimelineEvents te{event};
-                        std::visit([room_id = room_id](auto &event_) { event_.room_id = room_id; },
-                                   te);
+                        std::visit(
+                          [room_id_ = room_id](auto &event_) { event_.room_id = room_id_; }, te);
 
                         if (auto encryptedEvent =
                               std::get_if<mtx::events::EncryptedEvent<mtx::events::msg::Encrypted>>(
@@ -342,14 +344,14 @@ ChatPage::ChatPage(QSharedPointer<UserSettings> userSettings, QObject *parent)
                       roomModel->roomAvatarUrl(),
                       96,
                       this,
-                      [this, te = te, room_id = room_id, actions = actions](QPixmap image) {
+                      [this, te_ = te, room_id_ = room_id, actions_ = actions](QPixmap image) {
                           notificationsManager->postNotification(
                             mtx::responses::Notification{
-                              .actions     = actions,
-                              .event       = std::move(te),
+                              .actions     = actions_,
+                              .event       = std::move(te_),
                               .read        = false,
                               .profile_tag = "",
-                              .room_id     = room_id,
+                              .room_id     = room_id_,
                               .ts          = 0,
                             },
                             image.toImage());
@@ -403,6 +405,19 @@ ChatPage::ChatPage(QSharedPointer<UserSettings> userSettings, QObject *parent)
       this,
       [](std::function<void()> f) { f(); },
       Qt::QueuedConnection);
+
+    connect(qobject_cast<QGuiApplication *>(QGuiApplication::instance()),
+            &QGuiApplication::focusWindowChanged,
+            this,
+            [this](QWindow *activeWindow) {
+                if (activeWindow) {
+                    nhlog::ui()->debug("Stopping inactive timer.");
+                    lastWindowActive = QDateTime();
+                } else {
+                    nhlog::ui()->debug("Starting inactive timer.");
+                    lastWindowActive = QDateTime::currentDateTime();
+                }
+            });
 
     connectCallMessage<mtx::events::voip::CallInvite>();
     connectCallMessage<mtx::events::voip::CallCandidates>();
@@ -763,7 +778,26 @@ ChatPage::handleSyncResponse(const mtx::responses::Sync &res, const std::string 
     nhlog::net()->debug("sync completed: {}", res.next_batch);
 
     // Ensure that we have enough one-time keys available.
-    ensureOneTimeKeyCount(res.device_one_time_keys_count, res.device_unused_fallback_key_types);
+    std::map<std::string_view, std::uint16_t> counts{res.device_one_time_keys_count.begin(),
+                                                     res.device_one_time_keys_count.end()};
+    ensureOneTimeKeyCount(counts, res.device_unused_fallback_key_types);
+
+    std::optional<mtx::events::account_data::IgnoredUsers> oldIgnoredUsers;
+    if (auto ignoreEv = std::ranges::find_if(
+          res.account_data.events,
+          [](const mtx::events::collections::RoomAccountDataEvents &e) {
+              return std::holds_alternative<
+                mtx::events::AccountDataEvent<mtx::events::account_data::IgnoredUsers>>(e);
+          });
+        ignoreEv != res.account_data.events.end()) {
+        if (auto oldEv = cache::client()->getAccountData(mtx::events::EventType::IgnoredUsers))
+            oldIgnoredUsers =
+              std::get<mtx::events::AccountDataEvent<mtx::events::account_data::IgnoredUsers>>(
+                *oldEv)
+                .content;
+        else
+            oldIgnoredUsers = mtx::events::account_data::IgnoredUsers{};
+    }
 
     // TODO: fine grained error handling
     try {
@@ -773,6 +807,36 @@ ChatPage::handleSyncResponse(const mtx::responses::Sync &res, const std::string 
         auto updates = cache::getRoomInfo(cache::client()->roomsWithStateUpdates(res));
 
         emit syncUI(std::move(res));
+
+        // if the ignored users changed, clear timeline of all affected rooms.
+        if (oldIgnoredUsers) {
+            if (auto newEv =
+                  cache::client()->getAccountData(mtx::events::EventType::IgnoredUsers)) {
+                std::vector<mtx::events::account_data::IgnoredUser> changedUsers{};
+                std::ranges::set_symmetric_difference(
+                  oldIgnoredUsers->users,
+                  std::get<mtx::events::AccountDataEvent<mtx::events::account_data::IgnoredUsers>>(
+                    *newEv)
+                    .content.users,
+                  std::back_inserter(changedUsers),
+                  {},
+                  &mtx::events::account_data::IgnoredUser::id,
+                  &mtx::events::account_data::IgnoredUser::id);
+
+                std::unordered_set<std::string> roomsToReload;
+                for (const auto &user : changedUsers) {
+                    auto commonRooms = cache::client()->getCommonRooms(user.id);
+                    for (const auto &room : commonRooms)
+                        roomsToReload.insert(room.first);
+                }
+
+                for (const auto &room : roomsToReload) {
+                    if (auto model =
+                          view_manager_->rooms()->getRoomById(QString::fromStdString(room)))
+                        model->clearTimeline();
+                }
+            }
+        }
     } catch (const lmdb::map_full_error &e) {
         nhlog::db()->error("lmdb is full: {}", e.what());
         cache::deleteOldData();
@@ -780,7 +844,10 @@ ChatPage::handleSyncResponse(const mtx::responses::Sync &res, const std::string 
         nhlog::db()->error("saving sync response: {}", e.what());
     }
 
-    emit trySyncCb();
+    if (shouldThrottleSync())
+        QTimer::singleShot(1000, this, &ChatPage::trySyncCb);
+    else
+        emit trySyncCb();
 }
 
 void
@@ -1097,6 +1164,20 @@ ChatPage::setStatus(const QString &status)
       });
 }
 
+bool
+ChatPage::shouldBeUnavailable() const
+{
+    return lastWindowActive.isValid() &&
+           lastWindowActive.addSecs(60 * 5) < QDateTime::currentDateTime();
+}
+
+bool
+ChatPage::shouldThrottleSync() const
+{
+    return lastWindowActive.isValid() &&
+           lastWindowActive.addSecs(6 * 5) < QDateTime::currentDateTime();
+}
+
 mtx::presence::PresenceState
 ChatPage::currentPresence() const
 {
@@ -1107,6 +1188,12 @@ ChatPage::currentPresence() const
         return mtx::presence::unavailable;
     case UserSettings::Presence::Offline:
         return mtx::presence::offline;
+    case UserSettings::Presence::AutomaticPresence:
+        if (shouldBeUnavailable())
+            return mtx::presence::unavailable;
+        else
+            return mtx::presence::online;
+
     default:
         return mtx::presence::online;
     }
@@ -1125,7 +1212,7 @@ ChatPage::verifyOneTimeKeyCountAfterStartup()
                   return;
           }
 
-          std::map<std::string, uint16_t> key_counts;
+          std::map<std::string_view, uint16_t> key_counts;
           std::uint64_t count = 0;
           if (auto c = res.one_time_key_counts.find(mtx::crypto::SIGNED_CURVE25519);
               c == res.one_time_key_counts.end()) {
@@ -1146,7 +1233,7 @@ ChatPage::verifyOneTimeKeyCountAfterStartup()
 }
 
 void
-ChatPage::ensureOneTimeKeyCount(const std::map<std::string, uint16_t> &counts,
+ChatPage::ensureOneTimeKeyCount(const std::map<std::string_view, uint16_t> &counts,
                                 const std::optional<std::vector<std::string>> &unused_fallback_keys)
 {
     if (auto count = counts.find(mtx::crypto::SIGNED_CURVE25519); count != counts.end()) {

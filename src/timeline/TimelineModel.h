@@ -18,9 +18,8 @@
 #include "CacheStructs.h"
 #include "EventStore.h"
 #include "InputBar.h"
-#include "InviteesModel.h"
-#include "MemberList.h"
 #include "Permissions.h"
+#include "Reaction.h"
 #include "ReadReceiptsModel.h"
 #include "ui/RoomSummary.h"
 
@@ -312,7 +311,8 @@ public:
     Q_INVOKABLE void joinReplacementRoom(const QString &id);
     Q_INVOKABLE QString
     formatMemberEvent(const mtx::events::StateEvent<mtx::events::state::Member> &event) const;
-    Q_INVOKABLE QString formatJoinRuleEvent(const QString &id);
+    QString
+    formatJoinRuleEvent(const mtx::events::StateEvent<mtx::events::state::JoinRules> &event) const;
     QString formatHistoryVisibilityEvent(
       const mtx::events::StateEvent<mtx::events::state::HistoryVisibility> &event) const;
     QString
@@ -333,6 +333,8 @@ public:
     Q_INVOKABLE void showReadReceipts(const QString &id);
     Q_INVOKABLE void redactEvent(const QString &id, const QString &reason = "");
     Q_INVOKABLE void redactAllFromUser(const QString &userid, const QString &reason = "");
+    Q_INVOKABLE void
+    reportEvent(const QString &eventId, const QString &reason = {}, const int score = -50);
     Q_INVOKABLE int idToIndex(const QString &id) const;
     Q_INVOKABLE QString indexToId(int index) const;
     Q_INVOKABLE void openMedia(const QString &eventId);

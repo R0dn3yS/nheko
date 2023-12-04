@@ -5,7 +5,6 @@
 import QtQuick 2.5
 import QtQuick 2.12
 import QtQuick.Controls 2.12
-import im.nheko 1.0
 
 Switch {
     id: toggleButton
@@ -46,24 +45,20 @@ Switch {
             name: "off"
 
             PropertyChanges {
-                border.color: "#767676"
-                target: track
+                track.border.color: "#767676"
             }
             PropertyChanges {
-                target: handle
-                x: 0
+                handle.x: 0
             }
         },
         State {
             name: "on"
 
             PropertyChanges {
-                border.color: palette.highlight
-                target: track
+                track.border.color: palette.highlight
             }
             PropertyChanges {
-                target: handle
-                x: indicatorItem.width - handle.width
+                handle.x: indicatorItem.width - handle.width
             }
         }
     ]

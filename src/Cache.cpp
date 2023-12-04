@@ -24,6 +24,8 @@
 #include <qt6keychain/keychain.h>
 #endif
 
+#include <nlohmann/json.hpp>
+
 #include <mtx/responses/common.hpp>
 #include <mtx/responses/messages.hpp>
 
@@ -37,7 +39,9 @@
 
 //! Should be changed when a breaking change occurs in the cache format.
 //! This will reset client's data.
-static const std::string CURRENT_CACHE_FORMAT_VERSION{"2023.10.22"};
+static constexpr std::string_view CURRENT_CACHE_FORMAT_VERSION{"2023.10.22"};
+static constexpr std::string_view MAX_DBS_SETTINGS_KEY{"database/maxdbs"};
+static constexpr std::string_view MAX_DB_SIZE_SETTINGS_KEY{"database/maxsize"};
 
 //! Keys used for the DB
 static const std::string_view NEXT_BATCH_KEY("next_batch");
@@ -45,13 +49,13 @@ static const std::string_view OLM_ACCOUNT_KEY("olm_account");
 static const std::string_view CACHE_FORMAT_VERSION_KEY("cache_format_version");
 static const std::string_view CURRENT_ONLINE_BACKUP_VERSION("current_online_backup_version");
 
-static constexpr auto MAX_DBS = 32384UL;
+static constexpr auto MAX_DBS_DEFAULT = 32384U;
 
 #if Q_PROCESSOR_WORDSIZE >= 5 // 40-bit or more, up to 2^(8*WORDSIZE) words addressable.
-static constexpr auto DB_SIZE                 = 32ULL * 1024ULL * 1024ULL * 1024ULL; // 32 GB
+static constexpr auto DB_SIZE_DEFAULT         = 32ULL * 1024ULL * 1024ULL * 1024ULL; // 32 GB
 static constexpr size_t MAX_RESTORED_MESSAGES = 30'000;
 #elif Q_PROCESSOR_WORDSIZE == 4 // 32-bit address space limits mmaps
-static constexpr auto DB_SIZE                 = 1ULL * 1024ULL * 1024ULL * 1024ULL; // 1 GB
+static constexpr auto DB_SIZE_DEFAULT         = 1ULL * 1024ULL * 1024ULL * 1024ULL; // 1 GB
 static constexpr size_t MAX_RESTORED_MESSAGES = 5'000;
 #else
 #error Not enough virtual address space for the database on target CPU
@@ -195,14 +199,7 @@ compactDatabase(lmdb::env &from, lmdb::env &to)
     toTxn.commit();
 }
 
-template<class T>
-bool
-containsStateUpdates(const T &e)
-{
-    return std::visit([](const auto &ev) { return Cache::isStateEvent_<decltype(ev)>; }, e);
-}
-
-bool
+static bool
 containsStateUpdates(const mtx::events::collections::StrippedEvents &e)
 {
     using namespace mtx::events;
@@ -294,6 +291,17 @@ Cache::Cache(const QString &userId, QObject *parent)
     setup();
 }
 
+static QString
+cacheDirectoryName(const QString &userid, const QString &profile)
+{
+    QCryptographicHash hash(QCryptographicHash::Algorithm::Sha256);
+    hash.addData(userid.toUtf8());
+    hash.addData(profile.toUtf8());
+    return QStringLiteral("%1/db-%2")
+      .arg(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation),
+           hash.result().toHex());
+}
+
 void
 Cache::setup()
 {
@@ -302,37 +310,70 @@ Cache::setup()
     nhlog::db()->debug("setting up cache");
 
     // Previous location of the cache directory
-    auto oldCache =
+    auto oldCache2 =
       QStringLiteral("%1/%2%3").arg(QStandardPaths::writableLocation(QStandardPaths::CacheLocation),
                                     QString::fromUtf8(localUserId_.toUtf8().toHex()),
                                     QString::fromUtf8(settings->profile().toUtf8().toHex()));
 
-    cacheDirectory_ = QStringLiteral("%1/%2%3").arg(
+    auto oldCache = QStringLiteral("%1/%2%3").arg(
       QStandardPaths::writableLocation(QStandardPaths::AppDataLocation),
       QString::fromUtf8(localUserId_.toUtf8().toHex()),
       QString::fromUtf8(settings->profile().toUtf8().toHex()));
+
+    cacheDirectory_ = cacheDirectoryName(localUserId_, settings->profile());
+
+    nhlog::db()->debug("Database at: {}", cacheDirectory_.toStdString());
 
     bool isInitial = !QFile::exists(cacheDirectory_);
 
     // NOTE: If both cache directories exist it's better to do nothing: it
     // could mean a previous migration failed or was interrupted.
-    bool needsMigration = isInitial && QFile::exists(oldCache);
-
-    if (needsMigration) {
-        nhlog::db()->info("found old state directory, migrating");
-        if (!QDir().rename(oldCache, cacheDirectory_)) {
-            throw std::runtime_error(("Unable to migrate the old state directory (" + oldCache +
-                                      ") to the new location (" + cacheDirectory_ + ")")
-                                       .toStdString()
-                                       .c_str());
+    if (isInitial) {
+        if (QFile::exists(oldCache)) {
+            nhlog::db()->info("found old state directory, migrating");
+            if (!QDir().rename(oldCache, cacheDirectory_)) {
+                throw std::runtime_error(("Unable to migrate the old state directory (" + oldCache +
+                                          ") to the new location (" + cacheDirectory_ + ")")
+                                           .toStdString()
+                                           .c_str());
+            }
+            nhlog::db()->info("completed state migration");
+        } else if (QFile::exists(oldCache2)) {
+            nhlog::db()->info("found very old state directory, migrating");
+            if (!QDir().rename(oldCache2, cacheDirectory_)) {
+                throw std::runtime_error(("Unable to migrate the very old state directory (" +
+                                          oldCache2 + ") to the new location (" + cacheDirectory_ +
+                                          ")")
+                                           .toStdString()
+                                           .c_str());
+            }
+            nhlog::db()->info("completed state migration");
         }
-        nhlog::db()->info("completed state migration");
     }
 
     auto openEnv = [](const QString &name) {
+        auto settings      = UserSettings::instance();
+        std::size_t dbSize = std::max(
+          settings->qsettings()->value(MAX_DB_SIZE_SETTINGS_KEY, DB_SIZE_DEFAULT).toULongLong(),
+          DB_SIZE_DEFAULT);
+        unsigned dbCount =
+          std::max(settings->qsettings()->value(MAX_DBS_SETTINGS_KEY, MAX_DBS_DEFAULT).toUInt(),
+                   MAX_DBS_DEFAULT);
+
+        // ignore unreasonably high values of more than a quarter of the addressable memory
+        if (dbSize > (1ull << (Q_PROCESSOR_WORDSIZE * 8 - 2))) {
+            dbSize = DB_SIZE_DEFAULT;
+        }
+        // Limit databases to about a million. This would cause more than 7-120MB to get written on
+        // every commit, which I doubt would work well. File an issue, if you tested this and it
+        // works fine.
+        if (dbCount > (1u << 20)) {
+            dbCount = 1u << 20;
+        }
+
         auto e = lmdb::env::create();
-        e.set_mapsize(DB_SIZE);
-        e.set_max_dbs(MAX_DBS);
+        e.set_mapsize(dbSize);
+        e.set_max_dbs(dbCount);
         e.open(name.toStdString().c_str(), MDB_NOMETASYNC | MDB_NOSYNC);
         return e;
     };
@@ -361,8 +402,8 @@ Cache::setup()
         env_ = openEnv(cacheDirectory_);
 
         if (needsCompact) {
-            auto compactDir  = QStringLiteral("%1-compacting").arg(cacheDirectory_);
-            auto toDeleteDir = QStringLiteral("%1-olddb").arg(cacheDirectory_);
+            auto compactDir  = cacheDirectory_ + "-compacting";
+            auto toDeleteDir = cacheDirectory_ + "-olddb";
             if (QFile::exists(cacheDirectory_))
                 QDir(compactDir).removeRecursively();
             if (QFile::exists(toDeleteDir))
@@ -468,14 +509,14 @@ fatalSecretError()
 }
 
 static QString
-secretName(std::string name, bool internal)
+secretName(std::string_view name, bool internal)
 {
     auto settings = UserSettings::instance();
     return (internal ? "nheko." : "matrix.") +
            QString(
              QCryptographicHash::hash(settings->profile().toUtf8(), QCryptographicHash::Sha256)
                .toBase64()) +
-           "." + QString::fromStdString(name);
+           "." + QString::fromUtf8(name);
 }
 
 void
@@ -532,8 +573,8 @@ Cache::loadSecretsFromStore(
              name,
              toLoad,
              job,
-             name_    = name_,
-             internal = internal,
+             name__    = name_,
+             internal_ = internal,
              callback,
              databaseReadyOnFinished](QKeychain::Job *) mutable {
                 nhlog::db()->debug("Finished reading '{}'", toLoad.begin()->first);
@@ -549,7 +590,7 @@ Cache::loadSecretsFromStore(
                 if (secret.isEmpty()) {
                     nhlog::db()->debug("Restored empty secret '{}'.", name.toStdString());
                 } else {
-                    callback(name_, internal, secret.toStdString());
+                    callback(name__, internal_, secret.toStdString());
                 }
 
                 // load next secret
@@ -565,7 +606,7 @@ Cache::loadSecretsFromStore(
 }
 
 std::optional<std::string>
-Cache::secret(const std::string &name_, bool internal)
+Cache::secret(std::string_view name_, bool internal)
 {
     auto name = secretName(name_, internal);
 
@@ -585,7 +626,7 @@ Cache::secret(const std::string &name_, bool internal)
 }
 
 void
-Cache::storeSecret(const std::string &name_, const std::string &secret, bool internal)
+Cache::storeSecret(std::string_view name_, const std::string &secret, bool internal)
 {
     auto name = secretName(name_, internal);
 
@@ -597,11 +638,11 @@ Cache::storeSecret(const std::string &name_, const std::string &secret, bool int
     auto db_name = "secret." + name.toStdString();
     syncStateDb_.put(txn, db_name, nlohmann::json(encrypted).dump());
     txn.commit();
-    emit secretChanged(name_);
+    emit secretChanged(std::string(name_));
 }
 
 void
-Cache::deleteSecret(const std::string &name_, bool internal)
+Cache::deleteSecret(std::string_view name_, bool internal)
 {
     auto name = secretName(name_, internal);
 
@@ -904,9 +945,29 @@ Cache::saveInboundMegolmSession(const MegolmSessionIndex &index,
     std::string_view value;
     if (inboundMegolmSessionDb_.get(txn, key, value)) {
         auto oldSession = unpickle<InboundSessionObject>(std::string(value), pickle_secret_);
-        if (olm_inbound_group_session_first_known_index(session.get()) >
-            olm_inbound_group_session_first_known_index(oldSession.get())) {
-            nhlog::crypto()->warn("Not storing inbound session with newer first known index");
+
+        auto newIndex = olm_inbound_group_session_first_known_index(session.get());
+        auto oldIndex = olm_inbound_group_session_first_known_index(oldSession.get());
+
+        // merge trusted > untrusted
+        // first known index minimum
+        if (megolmSessionDataDb_.get(txn, key, value)) {
+            auto oldData = nlohmann::json::parse(value).get<GroupSessionData>();
+            if (oldData.trusted && newIndex >= oldIndex) {
+                nhlog::crypto()->warn(
+                  "Not storing inbound session of lesser trust or bigger index.");
+                return;
+            }
+
+            oldData.trusted = data.trusted || oldData.trusted;
+
+            if (newIndex < oldIndex) {
+                inboundMegolmSessionDb_.put(txn, key, pickled);
+                oldData.message_index = newIndex;
+            }
+
+            megolmSessionDataDb_.put(txn, key, nlohmann::json(oldData).dump());
+            txn.commit();
             return;
         }
     }
@@ -1636,10 +1697,10 @@ Cache::runMigrations()
            this->databaseReady_ = false;
            loadSecretsFromStore(
              {
-               {mtx::secret_storage::secrets::cross_signing_master, false},
-               {mtx::secret_storage::secrets::cross_signing_self_signing, false},
-               {mtx::secret_storage::secrets::cross_signing_user_signing, false},
-               {mtx::secret_storage::secrets::megolm_backup_v1, false},
+               {std::string(mtx::secret_storage::secrets::cross_signing_master), false},
+               {std::string(mtx::secret_storage::secrets::cross_signing_self_signing), false},
+               {std::string(mtx::secret_storage::secrets::cross_signing_user_signing), false},
+               {std::string(mtx::secret_storage::secrets::megolm_backup_v1), false},
              },
              [this,
               count = 1](const std::string &name, bool internal, const std::string &value) mutable {
@@ -1724,15 +1785,17 @@ Cache::runMigrations()
        [this]() {
            // migrate olm sessions to a single db
            try {
-               auto txn     = lmdb::txn::begin(env_, nullptr);
-               auto mainDb  = lmdb::dbi::open(txn);
-               auto dbNames = lmdb::cursor::open(txn, mainDb);
+               auto txn      = lmdb::txn::begin(env_, nullptr);
+               auto mainDb   = lmdb::dbi::open(txn);
+               auto dbNames  = lmdb::cursor::open(txn, mainDb);
+               bool doCommit = false;
 
                std::string_view dbName;
                while (dbNames.get(dbName, MDB_NEXT)) {
                    if (!dbName.starts_with("olm_sessions.v2/"))
                        continue;
 
+                   doCommit      = true;
                    auto curveKey = dbName;
                    curveKey.remove_prefix(std::string_view("olm_sessions.v2/").size());
 
@@ -1746,11 +1809,14 @@ Cache::runMigrations()
                          combineOlmSessionKeyFromCurveAndSessionId(curveKey, session_id),
                          json);
                    }
+                   olmCursor.close();
 
                    oldDb.drop(txn, true);
                }
+               dbNames.close();
 
-               txn.commit();
+               if (doCommit)
+                   txn.commit();
            } catch (const lmdb::error &e) {
                nhlog::db()->critical("Failed to convert olm sessions database in migration! {}",
                                      e.what());
@@ -1989,57 +2055,216 @@ Cache::updateState(const std::string &room, const mtx::responses::StateEvents &s
     txn.commit();
 }
 
-namespace {
 template<typename T>
-auto
-isMessage(const mtx::events::RoomEvent<T> &e)
-  -> std::enable_if_t<std::is_same<decltype(e.content.msgtype), std::string>::value, bool>
+std::optional<mtx::events::StateEvent<T>>
+Cache::getStateEvent(lmdb::txn &txn, const std::string &room_id, std::string_view state_key)
 {
-    return true;
+    try {
+        constexpr auto type = mtx::events::state_content_to_type<T>;
+        static_assert(type != mtx::events::EventType::Unsupported,
+                      "Not a supported type in state events.");
+
+        if (room_id.empty())
+            return std::nullopt;
+        const auto typeStr = to_string(type);
+
+        std::string_view value;
+        if (state_key.empty()) {
+            auto db = getStatesDb(txn, room_id);
+            if (!db.get(txn, typeStr, value)) {
+                return std::nullopt;
+            }
+        } else {
+            auto db = getStatesKeyDb(txn, room_id);
+            // we can search using state key, since the compare functions defaults to the whole
+            // string, when there is no nullbyte
+            std::string_view data     = state_key;
+            std::string_view typeStrV = typeStr;
+
+            auto cursor = lmdb::cursor::open(txn, db);
+            if (!cursor.get(typeStrV, data, MDB_GET_BOTH))
+                return std::nullopt;
+
+            try {
+                auto eventsDb = getEventsDb(txn, room_id);
+                auto eventid  = data;
+                if (auto sep = data.rfind('\0'); sep != std::string_view::npos) {
+                    if (!eventsDb.get(txn, eventid.substr(sep + 1), value))
+                        return std::nullopt;
+                } else {
+                    return std::nullopt;
+                }
+
+            } catch (std::exception &) {
+                return std::nullopt;
+            }
+        }
+
+        return nlohmann::json::parse(value).get<mtx::events::StateEvent<T>>();
+    } catch (std::exception &) {
+        return std::nullopt;
+    }
 }
 
 template<typename T>
-auto
-isMessage(const mtx::events::Event<T> &)
+std::vector<mtx::events::StateEvent<T>>
+Cache::getStateEventsWithType(lmdb::txn &txn,
+                              const std::string &room_id,
+                              mtx::events::EventType type)
+
 {
-    return false;
+    if (room_id.empty())
+        return {};
+
+    std::vector<mtx::events::StateEvent<T>> events;
+
+    {
+        auto db                   = getStatesKeyDb(txn, room_id);
+        auto eventsDb             = getEventsDb(txn, room_id);
+        const auto typeStr        = to_string(type);
+        std::string_view typeStrV = typeStr;
+        std::string_view data;
+        std::string_view value;
+
+        auto cursor = lmdb::cursor::open(txn, db);
+        bool first  = true;
+        if (cursor.get(typeStrV, data, MDB_SET)) {
+            while (cursor.get(typeStrV, data, first ? MDB_FIRST_DUP : MDB_NEXT_DUP)) {
+                first = false;
+
+                try {
+                    auto eventid = data;
+                    if (auto sep = data.rfind('\0'); sep != std::string_view::npos) {
+                        if (eventsDb.get(txn, eventid.substr(sep + 1), value))
+                            events.push_back(
+                              nlohmann::json::parse(value).get<mtx::events::StateEvent<T>>());
+                    }
+                } catch (std::exception &e) {
+                    nhlog::db()->warn("Failed to parse state event: {}", e.what());
+                }
+            }
+        }
+    }
+
+    return events;
 }
 
-template<typename T>
-auto
-isMessage(const mtx::events::EncryptedEvent<T> &)
+template<class T>
+void
+Cache::saveStateEvents(lmdb::txn &txn,
+                       lmdb::dbi &statesdb,
+                       lmdb::dbi &stateskeydb,
+                       lmdb::dbi &membersdb,
+                       lmdb::dbi &eventsDb,
+                       const std::string &room_id,
+                       const std::vector<T> &events)
 {
-    return true;
+    for (const auto &e : events)
+        saveStateEvent(txn, statesdb, stateskeydb, membersdb, eventsDb, room_id, e);
 }
 
-auto
-isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallInvite> &)
+template<class T>
+void
+Cache::saveStateEvent(lmdb::txn &txn,
+                      lmdb::dbi &statesdb,
+                      lmdb::dbi &stateskeydb,
+                      lmdb::dbi &membersdb,
+                      lmdb::dbi &eventsDb,
+                      const std::string &room_id,
+                      const T &event)
 {
-    return true;
-}
+    using namespace mtx::events;
+    using namespace mtx::events::state;
 
-auto
-isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallAnswer> &)
-{
-    return true;
-}
+    if (auto e = std::get_if<StateEvent<Member>>(&event); e != nullptr) {
+        switch (e->content.membership) {
+        //
+        // We only keep users with invite or join membership.
+        //
+        case Membership::Invite:
+        case Membership::Join: {
+            auto display_name =
+              e->content.display_name.empty() ? e->state_key : e->content.display_name;
 
-auto
-isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallHangUp> &)
-{
-    return true;
-}
+            std::string inviter = "";
+            if (e->content.membership == mtx::events::state::Membership::Invite) {
+                inviter = e->sender;
+            }
 
-// auto
-// isMessage(const mtx::events::RoomEvent<mtx::events::voip::CallReject> &)
-// {
-//     return true;
-// }
+            // Lightweight representation of a member.
+            MemberInfo tmp{
+              display_name,
+              e->content.avatar_url,
+              inviter,
+              e->content.reason,
+              e->content.is_direct,
+            };
+
+            membersdb.put(txn, e->state_key, nlohmann::json(tmp).dump());
+            break;
+        }
+        default: {
+            membersdb.del(txn, e->state_key, "");
+            break;
+        }
+        }
+    } else if (auto encr = std::get_if<StateEvent<Encryption>>(&event)) {
+        if (!encr->state_key.empty())
+            return;
+
+        setEncryptedRoom(txn, room_id);
+
+        std::string_view temp;
+        // ensure we don't replace the event in the db
+        if (statesdb.get(txn, to_string(encr->type), temp)) {
+            return;
+        }
+    }
+
+    std::visit(
+      [&txn, &statesdb, &stateskeydb, &eventsDb, &membersdb](const auto &e) {
+          if constexpr (isStateEvent_<decltype(e)>) {
+              eventsDb.put(txn, e.event_id, nlohmann::json(e).dump());
+
+              if (e.type != EventType::Unsupported) {
+                  if (std::is_same_v<std::remove_cv_t<std::remove_reference_t<decltype(e)>>,
+                                     StateEvent<mtx::events::msg::Redacted>>) {
+                      // apply the redaction event
+                      if (e.type == EventType::RoomMember) {
+                          // membership is not revoked, but names are yeeted (so we set the name
+                          // to the mxid)
+                          MemberInfo tmp{e.state_key, ""};
+                          membersdb.put(txn, e.state_key, nlohmann::json(tmp).dump());
+                      } else if (e.state_key.empty()) {
+                          // strictly speaking some stuff in those events can be redacted, but
+                          // this is close enough. Ref:
+                          // https://spec.matrix.org/v1.6/rooms/v10/#redactions
+                          if (e.type != EventType::RoomCreate &&
+                              e.type != EventType::RoomJoinRules &&
+                              e.type != EventType::RoomPowerLevels &&
+                              e.type != EventType::RoomHistoryVisibility)
+                              statesdb.del(txn, to_string(e.type));
+                      } else
+                          stateskeydb.del(txn, to_string(e.type), e.state_key + '\0' + e.event_id);
+                  } else if (e.state_key.empty()) {
+                      statesdb.put(txn, to_string(e.type), nlohmann::json(e).dump());
+                  } else {
+                      auto data = e.state_key + '\0' + e.event_id;
+                      auto key  = to_string(e.type);
+
+                      // Work around https://bugs.openldap.org/show_bug.cgi?id=8447
+                      stateskeydb.del(txn, key, data);
+                      stateskeydb.put(txn, key, data);
+                  }
+              }
+          }
+      },
+      event);
 }
 
 void
 Cache::saveState(const mtx::responses::Sync &res)
-{
+try {
     using namespace mtx::events;
     auto local_user_id = this->localUserId_.toStdString();
 
@@ -2204,10 +2429,9 @@ Cache::saveState(const mtx::responses::Sync &res)
         }
 
         for (const auto &e : room.second.timeline.events) {
-            if (!std::visit([](const auto &e) -> bool { return isMessage(e); }, e))
+            if (!mtx::accessors::is_message(e))
                 continue;
-            updatedInfo.approximate_last_modification_ts =
-              std::visit([](const auto &e) -> uint64_t { return e.origin_server_ts; }, e);
+            updatedInfo.approximate_last_modification_ts = mtx::accessors::origin_server_ts_ms(e);
         }
 
         if (auto newRoomInfoDump = nlohmann::json(updatedInfo).dump();
@@ -2286,6 +2510,42 @@ Cache::saveState(const mtx::responses::Sync &res)
     }
 
     emit roomReadStatus(readStatus);
+} catch (const lmdb::error &lmdbException) {
+    if (lmdbException.code() == MDB_DBS_FULL || lmdbException.code() == MDB_MAP_FULL) {
+        if (lmdbException.code() == MDB_DBS_FULL) {
+            auto settings = UserSettings::instance();
+
+            unsigned roomDbCount =
+              static_cast<unsigned>((res.rooms.invite.size() + res.rooms.join.size() +
+                                     res.rooms.knock.size() + res.rooms.leave.size()) *
+                                    20);
+
+            settings->qsettings()->setValue(
+              MAX_DBS_SETTINGS_KEY,
+              std::max(
+                settings->qsettings()->value(MAX_DBS_SETTINGS_KEY, MAX_DBS_DEFAULT).toUInt() * 2,
+                roomDbCount));
+        } else if (lmdbException.code() == MDB_MAP_FULL) {
+            auto settings = UserSettings::instance();
+
+            MDB_envinfo envinfo = {};
+            lmdb::env_info(env_, &envinfo);
+            settings->qsettings()->setValue(MAX_DB_SIZE_SETTINGS_KEY,
+                                            static_cast<qulonglong>(envinfo.me_mapsize * 2));
+        }
+
+        QMessageBox::warning(
+          nullptr,
+          tr("Database limit reached"),
+          tr("Your account is larger than our default database limit. We have "
+             "increased the capacity automatically, however you will need to "
+             "restart to apply this change. Nheko will now close automatically."),
+          QMessageBox::StandardButton::Close);
+        QCoreApplication::exit(1);
+        exit(1);
+    }
+
+    throw;
 }
 
 void
@@ -2378,14 +2638,14 @@ Cache::roomsWithStateUpdates(const mtx::responses::Sync &res)
     for (const auto &room : res.rooms.join) {
         bool hasUpdates = false;
         for (const auto &s : room.second.state.events) {
-            if (containsStateUpdates(s)) {
+            if (mtx::accessors::is_state_event(s)) {
                 hasUpdates = true;
                 break;
             }
         }
 
         for (const auto &s : room.second.timeline.events) {
-            if (containsStateUpdates(s)) {
+            if (mtx::accessors::is_state_event(s)) {
                 hasUpdates = true;
                 break;
             }
@@ -2708,6 +2968,7 @@ Cache::roomNamesAndAliases()
               .alias           = std::move(alias),
               .recent_activity = info.approximate_last_modification_ts,
               .is_tombstoned   = info.is_tombstoned,
+              .is_space        = info.is_space,
             });
         } catch (std::exception &e) {
             nhlog::db()->warn("Failed to add room {} to result: {}", room_id, e.what());
@@ -3118,11 +3379,26 @@ Cache::getRoomName(lmdb::txn &txn, lmdb::dbi &statesdb, lmdb::dbi &membersdb)
 
         return localUserId_;
     }();
+    auto second_member = [&members, this]() {
+        bool first = true;
+        for (const auto &m : members) {
+            if (m.first != localUserId_.toStdString()) {
+                if (first)
+                    first = false;
+                else
+                    return QString::fromStdString(m.second.name);
+            }
+        }
+
+        return localUserId_;
+    }();
 
     if (total == 2)
         return first_member;
-    else if (total > 2)
-        return tr("%1 and %n other(s)", "", (int)total - 1).arg(first_member);
+    else if (total == 3)
+        return tr("%1 and %2", "RoomName").arg(first_member, second_member);
+    else if (total > 3)
+        return tr("%1 and %n other(s)", "", (int)total - 2).arg(first_member);
 
     return tr("Empty Room");
 }
@@ -5974,13 +6250,49 @@ restoreOlmAccount()
 }
 
 void
-storeSecret(const std::string &name, const std::string &secret)
+storeSecret(std::string_view name, const std::string &secret)
 {
     instance_->storeSecret(name, secret);
 }
 std::optional<std::string>
-secret(const std::string &name)
+secret(std::string_view name)
 {
     return instance_->secret(name);
 }
+
+std::vector<ImagePackInfo>
+getImagePacks(const std::string &room_id, std::optional<bool> stickers)
+{
+    return instance_->getImagePacks(room_id, stickers);
+}
 } // namespace cache
+
+#define NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(Content)                                            \
+    template std::optional<mtx::events::StateEvent<Content>> Cache::getStateEvent(                 \
+      lmdb::txn &txn, const std::string &room_id, std::string_view state_key);                     \
+                                                                                                   \
+    template std::vector<mtx::events::StateEvent<Content>> Cache::getStateEventsWithType(          \
+      lmdb::txn &txn, const std::string &room_id, mtx::events::EventType type);
+
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::Aliases)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::Avatar)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::CanonicalAlias)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::Create)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::Encryption)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::GuestAccess)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::HistoryVisibility)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::JoinRules)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::Member)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::Name)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::PinnedEvents)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::PowerLevels)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::Tombstone)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::ServerAcl)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::Topic)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::Widget)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::policy_rule::UserRule)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::policy_rule::RoomRule)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::policy_rule::ServerRule)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::space::Child)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::state::space::Parent)
+NHEKO_CACHE_GET_STATE_EVENT_DEFINITION(mtx::events::msc2545::ImagePack)

@@ -4,9 +4,7 @@
 
 pragma ComponentBehavior: Bound
 import ".."
-import "../ui"
 import "../dialogs"
-import Qt.labs.platform as Platform
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -229,6 +227,24 @@ Rectangle {
                                     id: hiddenEventsDialog
 
                                     HiddenEventsDialog {}
+                                }
+                            }
+                        }
+
+                        DelegateChoice {
+                            roleValue: UserSettingsModel.ManageIgnoredUsers
+                            Button {
+                                text: qsTr("MANAGE")
+                                onClicked: {
+                                    var dialog = ignoredUsersDialog.createObject();
+                                    dialog.show();
+                                    destroyOnClose(dialog);
+                                }
+
+                                Component {
+                                    id: ignoredUsersDialog
+
+                                    IgnoredUsers {}
                                 }
                             }
                         }

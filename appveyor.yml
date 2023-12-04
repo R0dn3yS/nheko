@@ -7,15 +7,14 @@ image: Visual Studio 2022
 platform: x64
 
 environment:
-    BINTRAY_APIKEY:
-        secure: "iGl5mzE9/ta9kFELUxDw9XtlYMSCMai9xowXIkYzU8WKHz7NfW0mLwMJZvblZFXJ"
+    APPVEYOR_SAVE_CACHE_ON_ERROR: true
     MATRIX_ACCESS_TOKEN:
         secure: Qoy+QQ8zWXYCQrck9GtXJsoPTv9r/rhgCDUlKJ6ue+gkteYG40E9MxgwP1svn6bse20H4z6Svrxn8kFbcJB7Wg2Cnv1s326/vsJJzhWir2eHFFGK+f4SB992/U0HoQmk3Cq5hPk7dLcA7KqHIa1g1PTSFPfl1VODJ2UqqAyn8nzbC5ym+wwU1buJqoWPlTyHBW7eE8wNe77+qI18XpF7NN8yuOOyg3Tzup9YyXLrI36XiJu/5JD3j3s3V1QiUTpuLyQzqwuBUOf1MHTbzuPwHm3ZwzSM98WD6aL6riaK9qa7mDbSx1aY0ukIYSY9IdAfHNwZY/DEAn+QAVD+ZTvPq04ASv+kmSFpOBKr07kpqfM=
 
 
 
 cache:
-  - c:\hunter\ -> appveyor.yml, CMakeLists.txt
+  - c:\hunter\ -> appveyor.yml, CMakeLists.txt, cmake/Hunter/config.cmake
   - build\_deps -> appveyor.yml, CMakeLists.txt
 
 build:
@@ -31,8 +30,7 @@ build_script:
     # WINVERSION format:  9999.0.0.123/1.2.0.234
     - if "%APPVEYOR_REPO_TAG%"=="false" set INSTVERSION=0.11.3
     - if "%APPVEYOR_REPO_TAG%"=="false" set VERSION=0.11.3
-    - if "%APPVEYOR_REPO_TAG%"=="false" if "%APPVEYOR_REPO_BRANCH%"=="master" set INSTVERSION=9999.0
-    - if "%APPVEYOR_REPO_TAG%"=="false" set WINVERSION=%INSTVERSION%.0.%APPVEYOR_BUILD_NUMBER%
+    - if "%APPVEYOR_REPO_TAG%"=="false" set WINVERSION=%INSTVERSION%.%APPVEYOR_BUILD_NUMBER%
     # VERSION format:     v1.2.3/v1.3.4
     # INSTVERSION format: 1.2.3/1.3.4
     # WINVERSION format:  1.2.3.123/1.3.4.234
@@ -47,7 +45,7 @@ build_script:
     # Build nheko
     - cmake -G "Visual Studio 17 2022" -A x64 -H. -Bbuild
       -DHUNTER_ROOT="C:\hunter"
-      -DHUNTER_ENABLED=ON -DBUILD_SHARED_LIBS=OFF -DUSE_BUNDLED_OPENSSL=ON
+      -DHUNTER_ENABLED=ON -DBUILD_SHARED_LIBS=OFF -DUSE_BUNDLED_OPENSSL=ON -DUSE_BUNDLED_KDSINGLEAPPLICATION=ON
       -DCMAKE_BUILD_TYPE=Release -DHUNTER_CONFIGURATION_TYPES=Release
 
     - cmake --build build --config Release
@@ -93,17 +91,26 @@ after_build:
     - copy %BUILD%\deploy\installer\gui\package.xml installer\packages\io.github.nhekoreborn.nheko\meta
     - copy %BUILD%\deploy\installer\gui\installscript.qs installer\packages\io.github.nhekoreborn.nheko\meta
     # Amend version and date
-    - sed -i "s/__VERSION__/0.11.3/" installer\config\config.xml
-    - sed -i "s/__VERSION__/0.11.3/" installer\packages\io.github.nhekoreborn.nheko\meta\package.xml
+    - sed -i "s/__VERSION__/%VERSION%/" installer\config\config.xml
+    - sed -i "s/__VERSION__/%VERSION%/" installer\packages\io.github.nhekoreborn.nheko\meta\package.xml
     - sed -i "s/__DATE__/%DATE%/" installer\packages\io.github.nhekoreborn.nheko\meta\package.xml
     # Copy nheko data
     - xcopy NhekoData\*.* installer\packages\io.github.nhekoreborn.nheko\data\*.* /s /e /c /y
-    - move NhekoRelease\nheko.exe installer\packages\io.github.nhekoreborn.nheko\data
+    - copy NhekoRelease\nheko.exe installer\packages\io.github.nhekoreborn.nheko\data
     - mkdir tools
     - curl -L -O https://download.qt.io/official_releases/qt-installer-framework/4.3.0/QtInstallerFramework-windows-x86-4.3.0.exe
     - 7z x QtInstallerFramework-windows-x86-4.3.0.exe -otools -aoa
     - set PATH=%BUILD%\tools\bin;%PATH%
     - binarycreator.exe -f -c installer\config\config.xml -p installer\packages nheko-installer.exe
+
+    # build an msix
+    - mkdir msix
+    - xcopy .\NhekoRelease\*.* msix\*.* /s /e /c /y
+    - copy %BUILD%\resources\nheko.png msix
+    - copy %BUILD%\resources\AppxManifest.xml msix
+    - del msix\vc_redist*
+    - 'sed -i "s/ Version=[^ ]*/ Version=\"%WINVERSION%\"/" msix\AppxManifest.xml'
+    - '"C:\Program Files (x86)\Windows Kits\10\App Certification Kit\makeappx.exe" pack -d msix -p nheko.msix'
 
     - copy nheko-installer.exe nheko-%APPVEYOR_REPO_TAG_NAME%-installer.exe
     - copy nheko-installer.exe nheko-%APPVEYOR_PULL_REQUEST_HEAD_COMMIT%-installer.exe
@@ -122,5 +129,6 @@ deploy:
 
 artifacts:
     - path: nheko_win_64.zip
+    - path: nheko.msix
     - path: nheko-$(APPVEYOR_REPO_TAG_NAME)-installer.exe
     - path: nheko-$(APPVEYOR_PULL_REQUEST_HEAD_COMMIT)-installer.exe

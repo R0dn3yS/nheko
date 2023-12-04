@@ -2,10 +2,8 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import QtQuick 2.15
-import QtQml.Models 2.1
-import im.nheko 1.0
-import ".."
+import QtQuick
+import QtQml.Models
 
 Item {
     id: root

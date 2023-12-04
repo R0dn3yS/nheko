@@ -2,15 +2,8 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import "./components"
-import "./delegates"
-import "./emoji"
-import "./ui"
-import "./dialogs"
-import Qt.labs.platform 1.1 as Platform
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Layouts
 import QtQuick.Window
 import im.nheko
 
@@ -276,6 +269,25 @@ TimelineEvent {
                 ]
             }
 
+            DragHandler {
+                id: replyDragHandler
+                yAxis.enabled: false
+                xAxis.enabled: true
+                xAxis.minimum: wrapper.avatarMargin - 100
+                xAxis.maximum: wrapper.avatarMargin
+                onActiveChanged: {
+                    if (!replyDragHandler.active) {
+                        if (replyDragHandler.xAxis.minimum <= replyDragHandler.xAxis.activeValue + 1) {
+                            wrapper.room.reply = wrapper.eventId
+                        }
+                        gridContainer.x = wrapper.avatarMargin;
+                    }
+                }
+            }
+
+            TapHandler {
+                onDoubleTapped: wrapper.room.reply = wrapper.eventId
+            }
         },
             TimelineMetadata {
                 id: metadata

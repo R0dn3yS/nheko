@@ -9,42 +9,23 @@
 #include <mtx/requests.hpp>
 #include <mtx/responses/login.hpp>
 
-#include "AliasEditModel.h"
 #include "BlurhashProvider.h"
-#include "Cache.h"
 #include "Cache_p.h"
 #include "ChatPage.h"
-#include "Clipboard.h"
 #include "ColorImageProvider.h"
-#include "CombinedImagePackModel.h"
-#include "CompletionProxyModel.h"
 #include "Config.h"
-#include "EventAccessors.h"
-#include "GridImagePackModel.h"
-#include "ImagePackListModel.h"
-#include "InviteesModel.h"
 #include "JdenticonProvider.h"
 #include "Logging.h"
 #include "MainWindow.h"
 #include "MatrixClient.h"
-#include "MemberList.h"
 #include "MxcImageProvider.h"
-#include "PowerlevelsEditModels.h"
-#include "SingleImagePackModel.h"
 #include "TrayIcon.h"
-#include "UserDirectoryModel.h"
 #include "UserSettingsPage.h"
 #include "Utils.h"
 #include "dock/Dock.h"
-#include "emoji/Provider.h"
 #include "encryption/DeviceVerificationFlow.h"
-#include "encryption/SelfVerificationStatus.h"
-#include "timeline/DelegateChooser.h"
-#include "timeline/TimelineFilter.h"
 #include "timeline/TimelineViewManager.h"
-#include "ui/NhekoGlobalObject.h"
-#include "ui/RoomSummary.h"
-#include "ui/UIA.h"
+#include "ui/Theme.h"
 #include "voip/CallManager.h"
 #include "voip/WebRTCSession.h"
 
@@ -120,58 +101,6 @@ MainWindow::MainWindow(QWindow *parent)
 void
 MainWindow::registerQmlTypes()
 {
-    // qmlRegisterUncreatableType<DeviceVerificationFlow>(
-    //   "im.nheko",
-    //   1,
-    //   0,
-    //   "DeviceVerificationFlow",
-    //   QStringLiteral("Can't create verification flow from QML!"));
-    // qmlRegisterUncreatableType<UserProfile>(
-    //   "im.nheko",
-    //   1,
-    //   0,
-    //   "UserProfileModel",
-    //   QStringLiteral("UserProfile needs to be instantiated on the C++ side"));
-    // qmlRegisterUncreatableType<MemberList>(
-    //   "im.nheko",
-    //   1,
-    //   0,
-    //   "MemberList",
-    //   QStringLiteral("MemberList needs to be instantiated on the C++ side"));
-    // qmlRegisterUncreatableType<RoomSettings>(
-    //   "im.nheko",
-    //   1,
-    //   0,
-    //   "RoomSettingsModel",
-    //   QStringLiteral("Room Settings needs to be instantiated on the C++ side"));
-    // qmlRegisterUncreatableType<TimelineModel>(
-    //   "im.nheko", 1, 0, "Room", QStringLiteral("Room needs to be instantiated on the C++ side"));
-    // qmlRegisterUncreatableType<ImagePackListModel>(
-    //   "im.nheko",
-    //   1,
-    //   0,
-    //   "ImagePackListModel",
-    //   QStringLiteral("ImagePackListModel needs to be instantiated on the C++ side"));
-    // qmlRegisterUncreatableType<SingleImagePackModel>(
-    //   "im.nheko",
-    //   1,
-    //   0,
-    //   "SingleImagePackModel",
-    //   QStringLiteral("SingleImagePackModel needs to be instantiated on the C++ side"));
-    // qmlRegisterUncreatableType<InviteesModel>(
-    //   "im.nheko",
-    //   1,
-    //   0,
-    //   "InviteesModel",
-    //   QStringLiteral("InviteesModel needs to be instantiated on the C++ side"));
-
-    // qmlRegisterUncreatableMetaObject(emoji::staticMetaObject,
-    //                                  "im.nheko.EmojiModel",
-    //                                  1,
-    //                                  0,
-    //                                  "EmojiCategory",
-    //                                  QStringLiteral("Error: Only enums"));
-
     imgProvider = new MxcImageProvider();
     engine()->addImageProvider(QStringLiteral("MxcImage"), imgProvider);
     engine()->addImageProvider(QStringLiteral("colorimage"), new ColorImageProvider());
@@ -322,9 +251,9 @@ MainWindow::hasActiveUser()
     if (userSettings_->profile() != QLatin1String(""))
         prefix = "profile/" + userSettings_->profile() + "/";
 
-    return settings->contains(prefix + "auth/access_token") &&
-           settings->contains(prefix + "auth/home_server") &&
-           settings->contains(prefix + "auth/user_id");
+    return !settings->value(prefix + "auth/access_token").toString().isEmpty() &&
+           !settings->value(prefix + "auth/home_server").toString().isEmpty() &&
+           !settings->value(prefix + "auth/user_id").toString().isEmpty();
 }
 
 bool

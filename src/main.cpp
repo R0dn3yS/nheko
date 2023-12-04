@@ -10,7 +10,6 @@
 #include <QDir>
 #include <QFile>
 #include <QFontDatabase>
-#include <QGuiApplication>
 #include <QLabel>
 #include <QLibraryInfo>
 #include <QMessageBox>
@@ -20,6 +19,12 @@
 #include <QStandardPaths>
 #include <QTranslator>
 
+#ifdef Q_OS_UNIX
+#include <QtGui/qpa/qplatformwindow_p.h>
+#endif
+
+#include <kdsingleapplication.h>
+
 #include "Cache.h"
 #include "ChatPage.h"
 #include "Logging.h"
@@ -27,7 +32,6 @@
 #include "MatrixClient.h"
 #include "Utils.h"
 #include "config/nheko.h"
-#include "singleapplication.h"
 
 #if defined(Q_OS_MAC)
 #include "emoji/MacHelper.h"
@@ -181,7 +185,7 @@ main(int argc, char *argv[])
         if (arg.startsWith(QLatin1String("--profile="))) {
             arg.remove(QStringLiteral("--profile="));
             userdata = arg;
-        } else if (arg.startsWith(QLatin1String("--p="))) {
+        } else if (arg.startsWith(QLatin1String("-p="))) {
             arg.remove(QStringLiteral("-p="));
             userdata = arg;
         } else if (arg == QLatin1String("--profile") || arg == QLatin1String("-p")) {
@@ -196,14 +200,11 @@ main(int argc, char *argv[])
         }
     }
 
-    SingleApplication app(argc,
-                          argv,
-                          true,
-                          SingleApplication::Mode::User | SingleApplication::Mode::ExcludeAppPath |
-                            SingleApplication::Mode::ExcludeAppVersion |
-                            SingleApplication::Mode::SecondaryNotification,
-                          100,
-                          userdata == QLatin1String("default") ? QLatin1String("") : userdata);
+    QApplication app(argc, argv);
+
+    KDSingleApplication singleapp(
+      QStringLiteral("im.nheko.nheko-%1")
+        .arg(userdata == QLatin1String("default") ? QLatin1String("") : userdata));
 
     QCommandLineParser parser;
     parser.addHelpOption();
@@ -249,11 +250,56 @@ main(int argc, char *argv[])
 
     // This check needs to happen _after_ process(), so that we actually print help for --help when
     // Nheko is already running.
-    if (app.isSecondary()) {
-        std::cout << "Sending Matrix URL to main application: " << matrixUri.toStdString()
-                  << std::endl;
+    if (!singleapp.isPrimaryInstance()) {
+        auto token = qgetenv("XDG_ACTIVATION_TOKEN");
+
+#ifdef Q_OS_UNIX
+        // getting a valid activation token on wayland is a bit of a pain, it works most reliably
+        // when you have an actual window, that has the focus...
+        auto waylandApp = app.nativeInterface<QNativeInterface::QWaylandApplication>();
+        if (waylandApp) {
+            QQuickView window;
+            window.setTitle("Activate main instance");
+            window.setMaximumSize(QSize(100, 50));
+            window.setMinimumSize(QSize(100, 50));
+            window.setResizeMode(QQuickView::ResizeMode::SizeRootObjectToView);
+            window.setSource(QUrl(QStringLiteral("qrc:///resources/qml/ui/Spinner.qml")));
+            window.show();
+            auto waylandWindow =
+              window.nativeInterface<QNativeInterface::Private::QWaylandWindow>();
+            if (waylandWindow) {
+                std::cout << "Launching temp window to activate main instance!\n";
+                QObject::connect(
+                  waylandWindow,
+                  &QNativeInterface::Private::QWaylandWindow::xdgActivationTokenCreated,
+                  waylandWindow,
+                  [&token, &app](QString newToken) { // clazy:exclude=lambda-in-connect
+                      token = newToken.toUtf8();
+                      app.exit();
+                  },
+                  Qt::SingleShotConnection);
+                QTimer::singleShot(100, waylandWindow, [waylandWindow, waylandApp] {
+                    waylandWindow->requestXdgActivationToken(waylandApp->lastInputSerial());
+                });
+                app.exec();
+            }
+        }
+#endif
+
+        std::cout << "Activating main app (instead of opening it a second time)."
+                  << token.toStdString() << std::endl;
+
         //  open uri in main instance
-        app.sendMessage(matrixUri.toUtf8());
+        //  TODO(Nico): Send also an activation token.
+        singleapp.sendMessage("activate" + token);
+
+        if (!matrixUri.isEmpty()) {
+            std::cout << "Sending Matrix URL to main application: " << matrixUri.toStdString()
+                      << std::endl;
+            //  open uri in main instance
+            singleapp.sendMessage(matrixUri.toUtf8());
+        }
+
         return 0;
     }
 
@@ -384,27 +430,33 @@ main(int argc, char *argv[])
             nhlog::net()->debug("bye");
         }
     });
-    QObject::connect(&app, &SingleApplication::instanceStarted, &w, [&w]() {
-        w.show();
-        w.raise();
-        w.requestActivate();
-    });
 
     // It seems like handling the message in a blocking manner is a no-go. I have no idea how to
     // fix that, so just use a queued connection for now...  (ASAN does not cooperate and just
     // hides the crash D:)
     QObject::connect(
-      &app,
-      &SingleApplication::receivedMessage,
+      &singleapp,
+      &KDSingleApplication::messageReceived,
       ChatPage::instance(),
-      [&](quint32, QByteArray message) {
-          QString m = QString::fromUtf8(message);
-          ChatPage::instance()->handleMatrixUri(m);
+      [&](QByteArray message) {
+          if (message.isEmpty() || message.startsWith("activate")) {
+              auto token = message.remove(0, sizeof("activate") - 1);
+              if (!token.isEmpty()) {
+                  nhlog::ui()->debug("Setting activation token to: {}", token.toStdString());
+                  qputenv("XDG_ACTIVATION_TOKEN", token);
+              }
+              w.show();
+              w.raise();
+              w.requestActivate();
+          } else {
+              QString m = QString::fromUtf8(message);
+              ChatPage::instance()->handleMatrixUri(m);
+          }
       },
       Qt::QueuedConnection);
 
     QMetaObject::Connection uriConnection;
-    if (app.isPrimary() && !matrixUri.isEmpty()) {
+    if (singleapp.isPrimaryInstance() && !matrixUri.isEmpty()) {
         uriConnection = QObject::connect(ChatPage::instance(),
                                          &ChatPage::contentLoaded,
                                          ChatPage::instance(),
