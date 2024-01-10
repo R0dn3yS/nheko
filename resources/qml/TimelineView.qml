@@ -39,7 +39,7 @@ Item {
         emoji: true
     }
     Shortcut {
-        sequence: StandardKey.Close
+        sequences: [StandardKey.Close]
 
         onActivated: Rooms.resetCurrentRoom()
     }
@@ -276,6 +276,16 @@ Item {
             visible: roomPreview && roomPreview.isInvite
 
             onClicked: Rooms.declineInvite(roomPreview.roomid)
+        }
+        FlatButton {
+            Layout.alignment: Qt.AlignHCenter
+            text: qsTr("decline invite and ignore user")
+            visible: roomPreview && roomPreview.isInvite
+
+            onClicked: {
+                var inviter = TimelineManager.getGlobalUserProfile(roomPreview.inviterUserId)
+                inviter.ignored = true
+            }
         }
         FlatButton {
             Layout.alignment: Qt.AlignHCenter

@@ -19,7 +19,9 @@
 #include <QStandardPaths>
 #include <QTranslator>
 
-#ifdef Q_OS_UNIX
+// in theory we can enable this everywhere, but the header is missing on some of our CI systems and
+// it is too much effort to install.
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
 #include <QtGui/qpa/qplatformwindow_p.h>
 #endif
 
@@ -33,7 +35,7 @@
 #include "Utils.h"
 #include "config/nheko.h"
 
-#if defined(Q_OS_MAC)
+#if defined(Q_OS_MACOS)
 #include "emoji/MacHelper.h"
 #include "notifications/Manager.h"
 #endif
@@ -47,7 +49,7 @@
 
 #ifdef QML_DEBUGGING
 #include <QQmlDebuggingEnabler>
-QQmlDebuggingEnabler enabler;
+QQmlTriviallyDestructibleDebuggingEnabler enabler;
 #endif
 
 #if HAVE_BACKTRACE_SYMBOLS_FD
@@ -112,7 +114,7 @@ registerSignalHandlers()
 
 #endif
 
-#if defined(GSTREAMER_AVAILABLE) && (defined(Q_OS_MAC) || defined(Q_OS_WINDOWS))
+#if defined(GSTREAMER_AVAILABLE) && (defined(Q_OS_MACOS) || defined(Q_OS_WINDOWS))
 GMainLoop *gloop = 0;
 GThread *gthread = 0;
 
@@ -157,7 +159,6 @@ main(int argc, char *argv[])
     QCoreApplication::setApplicationName(QStringLiteral("nheko"));
     QCoreApplication::setApplicationVersion(nheko::version);
     QCoreApplication::setOrganizationName(QStringLiteral("nheko"));
-    QCoreApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
 
     // Disable the qml disk cache by default to prevent crashes on updates. See
     // https://github.com/Nheko-Reborn/nheko/issues/1383
@@ -167,7 +168,7 @@ main(int argc, char *argv[])
 
     // this needs to be after setting the application name. Or how would we find our settings
     // file then?
-#if !defined(Q_OS_MACOS)
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
     if (qgetenv("QT_SCALE_FACTOR").size() == 0) {
         float factor = utils::scaleFactor();
 
@@ -253,7 +254,7 @@ main(int argc, char *argv[])
     if (!singleapp.isPrimaryInstance()) {
         auto token = qgetenv("XDG_ACTIVATION_TOKEN");
 
-#ifdef Q_OS_UNIX
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
         // getting a valid activation token on wayland is a bit of a pain, it works most reliably
         // when you have an actual window, that has the focus...
         auto waylandApp = app.nativeInterface<QNativeInterface::QWaylandApplication>();
@@ -303,7 +304,7 @@ main(int argc, char *argv[])
         return 0;
     }
 
-#if !defined(Q_OS_MAC)
+#if !defined(Q_OS_MACOS)
     app.setWindowIcon(QIcon::fromTheme(QStringLiteral("nheko"), QIcon{":/logos/nheko.png"}));
 #endif
 #ifdef NHEKO_FLATPAK
@@ -319,7 +320,7 @@ main(int argc, char *argv[])
 
     registerSignalHandlers();
 
-#if defined(GSTREAMER_AVAILABLE) && (defined(Q_OS_MAC) || defined(Q_OS_WINDOWS))
+#if defined(GSTREAMER_AVAILABLE) && (defined(Q_OS_MACOS) || defined(Q_OS_WINDOWS))
     // If the version of Qt we're running in does not use GLib, we need to
     // start a GMainLoop so that gstreamer can dispatch events.
     const QMetaObject *mo = QAbstractEventDispatcher::instance(qApp->thread())->metaObject();
@@ -468,7 +469,7 @@ main(int argc, char *argv[])
     QDesktopServices::setUrlHandler(
       QStringLiteral("matrix"), ChatPage::instance(), "handleMatrixUri");
 
-#if defined(Q_OS_MAC)
+#if defined(Q_OS_MACOS)
     // Temporary solution for the emoji picker until
     // nheko has a proper menu bar with more functionality.
     MacHelper::initializeMenus();
